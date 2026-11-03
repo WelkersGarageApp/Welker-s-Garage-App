@@ -1,0 +1,2882 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-[#121214] text-slate-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welker's Garage - Shop Manager Pro</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts Inter & Orbitron -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Orbitron:wght@600;800;900&display=swap" rel="stylesheet">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-brand { font-family: 'Orbitron', sans-serif; }
+        
+        /* Industrial custom theme scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #121214; }
+        ::-webkit-scrollbar-thumb { background: #2a2b36; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #f96302; }
+
+        /* Cell-shaded industrial card effect */
+        .industrial-card {
+            background-color: #1e1e24;
+            border: 2px solid #2a2b36;
+            box-shadow: 4px 4px 0px #0a0a0c;
+        }
+
+        .industrial-btn {
+            box-shadow: 3px 3px 0px #000000;
+            transition: all 0.1s ease;
+        }
+        .industrial-btn:active {
+            transform: translate(2px, 2px);
+            box-shadow: 1px 1px 0px #000000;
+        }
+
+        /* Printable Invoice Styles */
+        @media print {
+            body * { visibility: hidden !important; }
+            #printable-invoice, #printable-invoice * { visibility: visible !important; }
+            #printable-invoice {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                background: white !important;
+                color: black !important;
+                padding: 20px;
+            }
+            .no-print { display: none !important; }
+        }
+    </style>
+</head>
+<body class="h-full flex flex-col antialiased selection:bg-[#f96302] selection:text-black">
+
+    <!-- Firebase SDK (Modular CDN Imports) -->
+    <script type="module">
+        import { initializeApp, getApps } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global State Window Object
+        window.shopState = {
+            workOrders: [],
+            inventory: [],
+            purchaseOrders: [],
+            presets: [],
+            customers: [],
+            vehicles: [],
+            settings: {
+                laborRate: 95.00,
+                partsMarkup: 25.00,
+                salesTaxRate: 7.50,
+                shopSuppliesPercent: 10.00,
+                capShopSupplies: true,
+                maxShopSupplies: 35.00,
+                hazmatFee: 10.00,
+                // Invoice Customization Settings
+                shopName: "WELKER'S GARAGE",
+                shopTagline: "Service & Performance Center",
+                addressLine1: "1042 Industrial Pkwy",
+                addressLine2: "Suite 4B",
+                cityStateZip: "Gearbox City, MC 90210",
+                shopPhone: "(555) 492-8819",
+                shopEmail: "service@welkersgarage.com",
+                logoStyle: "vtwin", // 'vtwin', 'custom', 'none'
+                customLogoUrl: "",
+                warrantyTerms: "All labor carries a 30-day / 1,000-mile warranty. Electrical components and custom performance parts are non-refundable. Storage fees of $35/day apply to vehicles not retrieved within 72 hours of completion notification.",
+                showSignatureBlock: true,
+                showVinOnPrint: true,
+                showMileageOnPrint: true,
+                showNotesOnPrint: true,
+                showItemizedPartsPrice: true,
+                sectionOrder: ['customer_info', 'job_notes', 'line_items', 'totals', 'terms']
+            },
+            isCloudActive: false,
+            currentView: 'workOrders'
+        };
+
+        let db = null;
+        let auth = null;
+        let unsubWO = null;
+        let unsubInv = null;
+        let unsubPO = null;
+        let unsubPresets = null;
+        let unsubCust = null;
+        let unsubVeh = null;
+        let unsubSettings = null;
+
+        function resolveFirebaseConfig() {
+            const userConfig = localStorage.getItem('welkers_firebase_custom_config');
+            if (userConfig) {
+                try { return JSON.parse(userConfig); } catch(e){}
+            }
+            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                try { return JSON.parse(__firebase_config); } catch(e){}
+            }
+            return null;
+        }
+
+        window.initFirebaseSystem = async function() {
+            const config = resolveFirebaseConfig();
+            const badge = document.getElementById('cloud-status-badge');
+
+            if (!config) {
+                badge.innerHTML = `<span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span> <span class="hidden sm:inline">Offline (Local DB)</span><span class="sm:hidden">Local</span>`;
+                window.shopState.isCloudActive = false;
+                window.loadLocalStorageFallback();
+                return;
+            }
+
+            try {
+                let app = !getApps().length ? initializeApp(config) : getApps()[0];
+                db = getFirestore(app);
+                auth = getAuth(app);
+                window.db = db;
+
+                const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                if (token) {
+                    await signInWithCustomToken(auth, token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        window.shopState.isCloudActive = true;
+                        badge.innerHTML = `<span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span> <span class="hidden sm:inline">Cloud Real-Time Active</span><span class="sm:hidden">Cloud</span>`;
+                        bindRealtimeFirestore();
+                    }
+                });
+            } catch(err) {
+                console.error("Firebase init failed:", err);
+                badge.innerHTML = `<span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span> <span class="hidden sm:inline">Local Storage (Error)</span><span class="sm:hidden">Local</span>`;
+                window.shopState.isCloudActive = false;
+                window.loadLocalStorageFallback();
+            }
+        };
+
+        function bindRealtimeFirestore() {
+            if (!db) return;
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'welkers-garage-app';
+
+            // Work Orders Listener
+            const woRef = collection(db, 'artifacts', appId, 'public', 'data', 'work_orders');
+            if (unsubWO) unsubWO();
+            unsubWO = onSnapshot(woRef, (snapshot) => {
+                const list = [];
+                snapshot.forEach(docSnap => list.push({ id: docSnap.id, ...docSnap.data() }));
+                window.shopState.workOrders = list;
+                window.renderAllViews();
+            }, (err) => console.error("WO Sync Error:", err));
+
+            // Inventory Listener
+            const invRef = collection(db, 'artifacts', appId, 'public', 'data', 'inventory');
+            if (unsubInv) unsubInv();
+            unsubInv = onSnapshot(invRef, (snapshot) => {
+                const list = [];
+                snapshot.forEach(docSnap => list.push({ id: docSnap.id, ...docSnap.data() }));
+                window.shopState.inventory = list;
+                window.renderAllViews();
+            }, (err) => console.error("Inventory Sync Error:", err));
+
+            // Purchase Orders Listener
+            const poRef = collection(db, 'artifacts', appId, 'public', 'data', 'purchase_orders');
+            if (unsubPO) unsubPO();
+            unsubPO = onSnapshot(poRef, (snapshot) => {
+                const list = [];
+                snapshot.forEach(docSnap => list.push({ id: docSnap.id, ...docSnap.data() }));
+                window.shopState.purchaseOrders = list;
+                window.renderAllViews();
+            }, (err) => console.error("PO Sync Error:", err));
+
+            // Presets Listener
+            const presetRef = collection(db, 'artifacts', appId, 'public', 'data', 'presets');
+            if (unsubPresets) unsubPresets();
+            unsubPresets = onSnapshot(presetRef, (snapshot) => {
+                const list = [];
+                snapshot.forEach(docSnap => list.push({ id: docSnap.id, ...docSnap.data() }));
+                window.shopState.presets = list;
+                window.renderAllViews();
+            }, (err) => console.error("Presets Sync Error:", err));
+
+            // Customers Listener
+            const custRef = collection(db, 'artifacts', appId, 'public', 'data', 'customers');
+            if (unsubCust) unsubCust();
+            unsubCust = onSnapshot(custRef, (snapshot) => {
+                const list = [];
+                snapshot.forEach(docSnap => list.push({ id: docSnap.id, ...docSnap.data() }));
+                window.shopState.customers = list;
+                window.renderAllViews();
+            }, (err) => console.error("Customers Sync Error:", err));
+
+            // Vehicles Listener
+            const vehRef = collection(db, 'artifacts', appId, 'public', 'data', 'vehicles');
+            if (unsubVeh) unsubVeh();
+            unsubVeh = onSnapshot(vehRef, (snapshot) => {
+                const list = [];
+                snapshot.forEach(docSnap => list.push({ id: docSnap.id, ...docSnap.data() }));
+                window.shopState.vehicles = list;
+                window.renderAllViews();
+            }, (err) => console.error("Vehicles Sync Error:", err));
+
+            // Settings Listener
+            const settingsRef = collection(db, 'artifacts', appId, 'public', 'data', 'settings');
+            if (unsubSettings) unsubSettings();
+            unsubSettings = onSnapshot(settingsRef, (snapshot) => {
+                snapshot.forEach(docSnap => {
+                    if (docSnap.id === 'general') {
+                        window.shopState.settings = { ...window.shopState.settings, ...docSnap.data() };
+                        window.populateSettingsForm();
+                        window.renderAllViews();
+                    }
+                });
+            }, (err) => console.error("Settings Sync Error:", err));
+        }
+
+        // Global Storage CRUD Helper Functions
+        window.saveWorkOrderCloud = async function(data) {
+            if (!window.shopState.isCloudActive || !db) {
+                const idx = window.shopState.workOrders.findIndex(w => w.id === data.id);
+                if (idx >= 0) window.shopState.workOrders[idx] = data;
+                else window.shopState.workOrders.push(data);
+                window.saveLocalStorageFallback();
+                window.renderAllViews();
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'welkers-garage-app';
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'work_orders', data.id), data, { merge: true });
+        };
+
+        window.deleteWorkOrderCloud = async function(id) {
+            if (!window.shopState.isCloudActive || !db) {
+                window.shopState.workOrders = window.shopState.workOrders.filter(w => w.id !== id);
+                window.saveLocalStorageFallback();
+                window.renderAllViews();
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'welkers-garage-app';
+            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'work_orders', id));
+        };
+
+        window.savePartCloud = async function(data) {
+            if (!window.shopState.isCloudActive || !db) {
+                const idx = window.shopState.inventory.findIndex(p => p.id === data.id);
+                if (idx >= 0) window.shopState.inventory[idx] = data;
+                else window.shopState.inventory.push(data);
+                window.saveLocalStorageFallback();
+                window.renderAllViews();
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'welkers-garage-app';
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'inventory', data.id), data, { merge: true });
+        };
+
+        window.deletePartCloud = async function(id) {
+            if (!window.shopState.isCloudActive || !db) {
+                window.shopState.inventory = window.shopState.inventory.filter(p => p.id !== id);
+                window.saveLocalStorageFallback();
+                window.renderAllViews();
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'welkers-garage-app';
+            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'inventory', id));
+        };
+
+        window.savePurchaseOrderCloud = async function(data) {
+            if (!window.shopState.isCloudActive || !db) {
+                const idx = window.shopState.purchaseOrders.findIndex(p => p.id === data.id);
+                if (idx >= 0) window.shopState.purchaseOrders[idx] = data;
+                else window.shopState.purchaseOrders.push(data);
+                window.saveLocalStorageFallback();
+                window.renderAllViews();
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'welkers-garage-app';
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'purchase_orders', data.id), data, { merge: true });
+        };
+
+        window.deletePurchaseOrderCloud = async function(id) {
+            if (!window.shopState.isCloudActive || !db) {
+                window.shopState.purchaseOrders = window.shopState.purchaseOrders.filter(p => p.id !== id);
+                window.saveLocalStorageFallback();
+                window.renderAllViews();
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'welkers-garage-app';
+            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'purchase_orders', id));
+        };
+
+        window.savePresetCloud = async function(data) {
+            if (!window.shopState.isCloudActive || !db) {
+                const idx = window.shopState.presets.findIndex(p => p.id === data.id);
+                if (idx >= 0) window.shopState.presets[idx] = data;
+                else window.shopState.presets.push(data);
+                window.saveLocalStorageFallback();
+                window.renderAllViews();
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'welkers-garage-app';
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'presets', data.id), data, { merge: true });
+        };
+
+        window.deletePresetCloud = async function(id) {
+            if (!window.shopState.isCloudActive || !db) {
+                window.shopState.presets = window.shopState.presets.filter(p => p.id !== id);
+                window.saveLocalStorageFallback();
+                window.renderAllViews();
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'welkers-garage-app';
+            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'presets', id));
+        };
+
+        window.saveCustomerCloud = async function(data) {
+            if (!window.shopState.isCloudActive || !db) {
+                const idx = window.shopState.customers.findIndex(c => c.id === data.id);
+                if (idx >= 0) window.shopState.customers[idx] = data;
+                else window.shopState.customers.push(data);
+                window.saveLocalStorageFallback();
+                window.renderAllViews();
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'welkers-garage-app';
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'customers', data.id), data, { merge: true });
+        };
+
+        window.deleteCustomerCloud = async function(id) {
+            if (!window.shopState.isCloudActive || !db) {
+                window.shopState.customers = window.shopState.customers.filter(c => c.id !== id);
+                window.saveLocalStorageFallback();
+                window.renderAllViews();
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'welkers-garage-app';
+            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'customers', id));
+        };
+
+        window.saveVehicleCloud = async function(data) {
+            if (!window.shopState.isCloudActive || !db) {
+                const idx = window.shopState.vehicles.findIndex(v => v.id === data.id);
+                if (idx >= 0) window.shopState.vehicles[idx] = data;
+                else window.shopState.vehicles.push(data);
+                window.saveLocalStorageFallback();
+                window.renderAllViews();
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'welkers-garage-app';
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'vehicles', data.id), data, { merge: true });
+        };
+
+        window.deleteVehicleCloud = async function(id) {
+            if (!window.shopState.isCloudActive || !db) {
+                window.shopState.vehicles = window.shopState.vehicles.filter(v => v.id !== id);
+                window.saveLocalStorageFallback();
+                window.renderAllViews();
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'welkers-garage-app';
+            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'vehicles', id));
+        };
+
+        window.saveSettingsCloud = async function(data) {
+            window.shopState.settings = { ...window.shopState.settings, ...data };
+            if (!window.shopState.isCloudActive || !db) {
+                window.saveLocalStorageFallback();
+                window.renderAllViews();
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'welkers-garage-app';
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'general'), window.shopState.settings, { merge: true });
+        };
+
+        document.addEventListener('DOMContentLoaded', () => {
+            window.initFirebaseSystem();
+        });
+    </script>
+
+    <!-- Top Widescreen Desktop Header Bar -->
+    <header class="bg-[#1e1e24] border-b-2 border-[#2a2b36] sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            
+            <!-- Branding & Logo -->
+            <div class="flex items-center space-x-3">
+                <div id="header-logo-container" class="w-12 h-12 rounded-lg bg-[#121214] border-2 border-[#f96302] flex items-center justify-center p-1.5 shadow-[2px_2px_0px_#000]">
+                    <!-- Vector V-Twin Engine WG Logo -->
+                    <svg class="w-full h-full text-[#f96302]" viewBox="0 0 200 170" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M 45 42 L 85 28 L 75 14 L 35 28 Z" fill="#1e1e24" />
+                        <path d="M 155 42 L 115 28 L 125 14 L 165 28 Z" fill="#1e1e24" />
+                        <path d="M 45 45 L 85 58 M 42 55 L 85 69 M 39 65 L 85 80 M 36 75 L 85 91 M 33 85 L 85 102 M 30 95 L 85 113" stroke-width="4" />
+                        <path d="M 155 45 L 115 58 M 158 55 L 115 69 M 161 65 L 115 80 M 164 75 L 115 91 M 167 85 L 115 102 M 170 95 L 115 113" stroke-width="4" />
+                        <path d="M 70 120 L 70 145 C 70 158 130 158 130 145 L 130 120 Z" fill="#1e1e24" />
+                        <path d="M 82 128 L 82 142 C 82 150 118 150 118 142 L 118 128 Z" stroke-width="4" />
+                        <ellipse cx="100" cy="55" rx="26" ry="24" fill="#121214" stroke="#ffffff" stroke-width="5" />
+                        <text x="100" y="52" text-anchor="middle" font-family="'Orbitron', sans-serif" font-weight="900" font-size="20" fill="#ffffff" stroke="none">W</text>
+                        <text x="100" y="70" text-anchor="middle" font-family="'Orbitron', sans-serif" font-weight="900" font-size="18" fill="#f96302" stroke="none">G</text>
+                    </svg>
+                </div>
+                <div>
+                    <h1 id="header-shop-name" class="font-brand text-lg font-black tracking-tight text-white flex items-center gap-2">
+                        WELKER'S GARAGE <span class="text-[10px] uppercase font-sans font-bold bg-[#f96302]/10 text-[#f96302] border border-[#f96302]/30 px-2 py-0.5 rounded">SHOP PRO</span>
+                    </h1>
+                    <p id="header-shop-tagline" class="text-[11px] text-slate-400 font-mono hidden sm:block">SERVICE & INVENTORY HUB</p>
+                </div>
+            </div>
+
+            <!-- Desktop Navigation Tabs -->
+            <nav class="hidden md:flex items-center space-x-1 font-semibold text-xs uppercase tracking-wider">
+                <button onclick="switchTab('workOrders')" id="dt-tab-workOrders" class="px-3 py-2 rounded-lg bg-[#f96302] text-black font-extrabold flex items-center gap-1.5 industrial-btn">
+                    <i class="fa-solid fa-file-invoice-dollar"></i> Work Orders
+                </button>
+                <button onclick="switchTab('customers')" id="dt-tab-customers" class="px-3 py-2 rounded-lg text-slate-300 hover:text-white hover:bg-[#2a2b36] flex items-center gap-1.5 transition">
+                    <i class="fa-solid fa-users"></i> Customers
+                </button>
+                <button onclick="switchTab('inventory')" id="dt-tab-inventory" class="px-3 py-2 rounded-lg text-slate-300 hover:text-white hover:bg-[#2a2b36] flex items-center gap-1.5 transition">
+                    <i class="fa-solid fa-boxes-stacked"></i> Inventory <span id="badge-inv-low" class="hidden px-1.5 py-0.5 text-[10px] rounded bg-rose-500 text-white font-bold">0</span>
+                </button>
+                <button onclick="switchTab('purchaseOrders')" id="dt-tab-purchaseOrders" class="px-3 py-2 rounded-lg text-slate-300 hover:text-white hover:bg-[#2a2b36] flex items-center gap-1.5 transition">
+                    <i class="fa-solid fa-cart-shopping"></i> POs <span id="badge-po-count" class="hidden px-1.5 py-0.5 text-[10px] rounded bg-amber-500 text-black font-bold">0</span>
+                </button>
+                <button onclick="switchTab('presets')" id="dt-tab-presets" class="px-3.5 py-2 rounded-lg text-slate-300 hover:text-white hover:bg-[#2a2b36] flex items-center gap-1.5 transition">
+                    <i class="fa-solid fa-bolt"></i> Presets
+                </button>
+                <button onclick="switchTab('settings')" id="dt-tab-settings" class="px-3 py-2 rounded-lg text-slate-300 hover:text-white hover:bg-[#2a2b36] flex items-center gap-1.5 transition">
+                    <i class="fa-solid fa-sliders"></i> Settings
+                </button>
+            </nav>
+
+            <!-- Header Action Controls -->
+            <div class="flex items-center space-x-2">
+                <button onclick="openConfigModal()" class="bg-[#121214] border border-[#2a2b36] hover:border-[#f96302] text-slate-300 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition">
+                    <i class="fa-solid fa-cloud text-slate-400"></i> <span class="hidden sm:inline">Sync</span>
+                </button>
+                
+                <div id="cloud-status-badge" class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#121214] border border-[#2a2b36] text-xs font-medium text-slate-300">
+                    <span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span> Initializing...
+                </div>
+
+                <button onclick="openWorkOrderModal()" class="bg-[#f96302] hover:bg-[#e05500] text-black font-black px-3.5 py-1.5 rounded-lg text-xs uppercase tracking-wider flex items-center gap-1.5 industrial-btn">
+                    <i class="fa-solid fa-plus font-black"></i> <span class="hidden sm:inline">New Order</span><span class="sm:hidden">New</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content Body -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 mb-20 md:mb-6">
+
+        <!-- ================= TAB 1: WORK ORDERS ================= -->
+        <section id="tab-workOrders" class="space-y-6">
+            <!-- Controls Bar -->
+            <div class="industrial-card p-4 rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div class="flex flex-1 items-center gap-3 w-full sm:w-auto">
+                    <div class="relative flex-1 sm:w-72">
+                        <i class="fa-solid fa-magnifying-glass absolute left-3 top-3 text-slate-500 text-xs"></i>
+                        <input type="text" id="wo-search" oninput="renderWorkOrders()" placeholder="Search customer, vehicle, WO #..." class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg pl-9 pr-4 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                    <select id="wo-filter-status" onchange="renderWorkOrders()" class="bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-slate-300 focus:outline-none focus:border-[#f96302]">
+                        <option value="ALL">All Statuses</option>
+                        <option value="Draft">Draft</option>
+                        <option value="In Progress">In Progress</option>
+                        <option value="Waiting on Parts">Waiting on Parts</option>
+                        <option value="Completed">Completed</option>
+                        <option value="Invoiced">Invoiced / Paid</option>
+                    </select>
+                </div>
+
+                <div class="flex items-center gap-4 text-xs text-slate-400 font-mono w-full sm:w-auto justify-between sm:justify-end">
+                    <span>Active: <strong id="stat-wo-active" class="text-[#f96302] font-bold">0</strong></span>
+                    <span>Completed: <strong id="stat-wo-completed" class="text-emerald-400 font-bold">0</strong></span>
+                </div>
+            </div>
+
+            <!-- Work Orders Data Table -->
+            <div class="industrial-card rounded-xl overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs text-slate-300">
+                        <thead class="bg-[#121214] text-slate-400 uppercase font-mono font-bold tracking-wider border-b border-[#2a2b36]">
+                            <tr>
+                                <th class="py-3.5 px-4">WO #</th>
+                                <th class="py-3.5 px-4">Customer</th>
+                                <th class="py-3.5 px-4">Vehicle / VIN</th>
+                                <th class="py-3.5 px-4">Status</th>
+                                <th class="py-3.5 px-4 text-right">Total</th>
+                                <th class="py-3.5 px-4 text-center">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="wo-table-body" class="divide-y divide-[#2a2b36]">
+                            <!-- Dynamic rendering -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= TAB 2: CUSTOMERS & VEHICLES ================= -->
+        <section id="tab-customers" class="hidden space-y-6">
+            <div class="industrial-card p-4 rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div class="flex flex-1 items-center gap-3 w-full sm:w-auto">
+                    <div class="relative flex-1 sm:w-80">
+                        <i class="fa-solid fa-magnifying-glass absolute left-3 top-3 text-slate-500 text-xs"></i>
+                        <input type="text" id="cust-search" oninput="renderCustomersAndVehicles()" placeholder="Search customer, phone, or VIN..." class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg pl-9 pr-4 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                </div>
+
+                <div class="flex items-center gap-2">
+                    <button onclick="openVehicleModal()" class="bg-[#2a2b36] hover:bg-slate-700 text-white font-bold px-3.5 py-2 rounded-lg text-xs uppercase tracking-wider flex items-center gap-1.5 transition">
+                        <i class="fa-solid fa-motorcycle text-[#f96302]"></i> + Add Vehicle / VIN
+                    </button>
+                    <button onclick="openCustomerModal()" class="bg-[#f96302] text-black font-extrabold px-4 py-2 rounded-lg text-xs uppercase tracking-wider industrial-btn flex items-center gap-2">
+                        <i class="fa-solid fa-user-plus font-black"></i> + Add Customer
+                    </button>
+                </div>
+            </div>
+
+            <!-- Customers & Linked Vehicles Grid -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <!-- Customer Sidebar -->
+                <div class="lg:col-span-1 industrial-card rounded-xl overflow-hidden flex flex-col max-h-[700px]">
+                    <div class="px-4 py-3 bg-[#121214] border-b border-[#2a2b36] font-mono text-xs font-bold text-slate-300 flex justify-between items-center">
+                        <span><i class="fa-solid fa-address-book text-[#f96302] mr-1.5"></i> Customers Directory</span>
+                        <span id="stat-cust-count" class="bg-[#2a2b36] text-[#f96302] px-2 py-0.5 rounded text-[10px]">0</span>
+                    </div>
+                    <div id="customer-list-body" class="divide-y divide-[#2a2b36] overflow-y-auto flex-1">
+                        <!-- Dynamic list -->
+                    </div>
+                </div>
+
+                <!-- Customer Specs & VIN History Timeline -->
+                <div class="lg:col-span-2 space-y-6">
+                    <div id="cust-detail-panel" class="industrial-card rounded-xl p-6">
+                        <div class="text-center py-12 text-slate-500 font-mono text-xs">
+                            <i class="fa-solid fa-id-card text-3xl mb-3 text-slate-600"></i>
+                            <p>Select a customer from the directory to view details, registered vehicles, and VIN history logs.</p>
+                        </div>
+                    </div>
+
+                    <div id="vin-history-panel" class="industrial-card rounded-xl p-6 hidden">
+                        <div class="flex items-center justify-between pb-4 border-b border-[#2a2b36] mb-4">
+                            <div>
+                                <h3 id="vin-history-title" class="font-brand text-sm font-bold text-white flex items-center gap-2">
+                                    <i class="fa-solid fa-clock-rotate-left text-[#f96302]"></i> Lifetime VIN Service Timeline
+                                </h3>
+                                <p id="vin-history-subtitle" class="text-xs text-slate-400 font-mono mt-0.5">VIN: N/A</p>
+                            </div>
+                            <span id="vin-history-total" class="font-mono text-xs font-bold text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded border border-emerald-500/20">Total Spent: $0.00</span>
+                        </div>
+                        <div id="vin-history-timeline" class="space-y-4 text-xs">
+                            <!-- Dynamic VIN History -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= TAB 3: INVENTORY ================= -->
+        <section id="tab-inventory" class="hidden space-y-6">
+            <div class="industrial-card p-4 rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div class="flex flex-1 items-center gap-3 w-full sm:w-auto">
+                    <div class="relative flex-1 sm:w-72">
+                        <i class="fa-solid fa-magnifying-glass absolute left-3 top-3 text-slate-500 text-xs"></i>
+                        <input type="text" id="inv-search" oninput="renderInventory()" placeholder="Search part # or description..." class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg pl-9 pr-4 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                    <select id="inv-filter-cat" onchange="renderInventory()" class="bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-slate-300 focus:outline-none focus:border-[#f96302]">
+                        <option value="ALL">All Categories</option>
+                        <option value="Filters">Filters</option>
+                        <option value="Fluids & Oils">Fluids & Oils</option>
+                        <option value="Brakes">Brakes</option>
+                        <option value="Tires">Tires</option>
+                        <option value="Spark Plugs & Ignition">Spark Plugs & Ignition</option>
+                        <option value="Hardware">Hardware</option>
+                    </select>
+                </div>
+
+                <button onclick="openInventoryModal()" class="bg-[#f96302] text-black font-extrabold px-4 py-2 rounded-lg text-xs uppercase tracking-wider industrial-btn flex items-center gap-2">
+                    <i class="fa-solid fa-plus font-black"></i> Add Part
+                </button>
+            </div>
+
+            <!-- Inventory Data Table -->
+            <div class="industrial-card rounded-xl overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs text-slate-300">
+                        <thead class="bg-[#121214] text-slate-400 uppercase font-mono font-bold tracking-wider border-b border-[#2a2b36]">
+                            <tr>
+                                <th class="py-3.5 px-4">Part #</th>
+                                <th class="py-3.5 px-4">Description</th>
+                                <th class="py-3.5 px-4">Category</th>
+                                <th class="py-3.5 px-4 text-center">In Stock</th>
+                                <th class="py-3.5 px-4 text-right">Cost</th>
+                                <th class="py-3.5 px-4 text-right">Retail Price</th>
+                                <th class="py-3.5 px-4 text-center">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="inv-table-body" class="divide-y divide-[#2a2b36]">
+                            <!-- Dynamic rendering -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= TAB 4: PURCHASE ORDERS (NEW) ================= -->
+        <section id="tab-purchaseOrders" class="hidden space-y-6">
+            <div class="industrial-card p-4 rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                    <h2 class="font-brand text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                        <i class="fa-solid fa-cart-shopping text-[#f96302]"></i> Purchase Orders & Shop Supply Restocks
+                    </h2>
+                    <p class="text-xs text-slate-400 mt-1">Order replacement stock, shop supplies, and special parts. Click 'Receive & Restock' to update inventory automatically.</p>
+                </div>
+                <button onclick="openPurchaseOrderModal()" class="bg-[#f96302] text-black font-extrabold px-4 py-2 rounded-lg text-xs uppercase tracking-wider industrial-btn flex items-center gap-2">
+                    <i class="fa-solid fa-plus font-black"></i> Create Purchase Order
+                </button>
+            </div>
+
+            <div class="industrial-card rounded-xl overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs text-slate-300">
+                        <thead class="bg-[#121214] text-slate-400 uppercase font-mono font-bold tracking-wider border-b border-[#2a2b36]">
+                            <tr>
+                                <th class="py-3.5 px-4">PO #</th>
+                                <th class="py-3.5 px-4">Vendor</th>
+                                <th class="py-3.5 px-4">Date / Expected</th>
+                                <th class="py-3.5 px-4">Status</th>
+                                <th class="py-3.5 px-4 text-right">PO Total</th>
+                                <th class="py-3.5 px-4 text-center">Restock Action</th>
+                                <th class="py-3.5 px-4 text-center">Manage</th>
+                            </tr>
+                        </thead>
+                        <tbody id="po-table-body" class="divide-y divide-[#2a2b36]">
+                            <!-- Dynamic rendering -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= TAB 5: SERVICE PRESETS ================= -->
+        <section id="tab-presets" class="hidden space-y-6">
+            <div class="industrial-card p-4 rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                    <h2 class="font-brand text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                        <i class="fa-solid fa-bolt text-[#f96302]"></i> Service Preset Packages
+                    </h2>
+                    <p class="text-xs text-slate-400 mt-1">1-Tap service packages to auto-populate labor hours and parts into new work orders.</p>
+                </div>
+                <button onclick="openPresetModal()" class="bg-[#f96302] text-black font-extrabold px-4 py-2 rounded-lg text-xs uppercase tracking-wider industrial-btn flex items-center gap-2">
+                    <i class="fa-solid fa-plus font-black"></i> Create Preset
+                </button>
+            </div>
+
+            <div id="presets-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <!-- Dynamic Grid -->
+            </div>
+        </section>
+
+        <!-- ================= TAB 6: SHOP SETTINGS & INVOICE CUSTOMIZATION ================= -->
+        <section id="tab-settings" class="hidden space-y-6">
+            <div class="industrial-card p-4 rounded-xl flex justify-between items-center">
+                <div>
+                    <h2 class="font-brand text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                        <i class="fa-solid fa-sliders text-[#f96302]"></i> Shop Settings & Printable Invoice Customization
+                    </h2>
+                    <p class="text-xs text-slate-400 mt-1">Configure financial rates, shop contact header, terms of service, logo options, and print layout arrangement.</p>
+                </div>
+                <button onclick="saveShopSettingsForm()" class="bg-[#f96302] text-black font-extrabold px-5 py-2 rounded-lg text-xs uppercase tracking-wider industrial-btn flex items-center gap-2">
+                    <i class="fa-solid fa-floppy-disk"></i> Save Settings
+                </button>
+            </div>
+
+            <!-- Sub-Nav Toggles for Settings Sections -->
+            <div class="flex border-b border-[#2a2b36] gap-2 font-mono text-xs">
+                <button onclick="switchSettingsSubTab('financial')" id="subtab-btn-financial" class="px-4 py-2 border-b-2 border-[#f96302] text-[#f96302] font-bold">
+                    1. Financials & Markups
+                </button>
+                <button onclick="switchSettingsSubTab('invoice')" id="subtab-btn-invoice" class="px-4 py-2 text-slate-400 hover:text-white">
+                    2. Invoice Header & Contact
+                </button>
+                <button onclick="switchSettingsSubTab('terms')" id="subtab-btn-terms" class="px-4 py-2 text-slate-400 hover:text-white">
+                    3. Terms & Layout Control
+                </button>
+            </div>
+
+            <!-- Sub-Tab 1: Financial & Markup Rates -->
+            <div id="subtab-financial" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div class="lg:col-span-2 space-y-6">
+                    <div class="industrial-card p-6 rounded-xl space-y-6">
+                        <h3 class="font-mono text-xs font-bold uppercase text-[#f96302] border-b border-[#2a2b36] pb-3">
+                            Labor, Markups & Tax Rates
+                        </h3>
+                        
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            <div>
+                                <label class="block text-xs font-medium text-slate-300 mb-1">Base Labor Rate ($/hr)</label>
+                                <div class="relative">
+                                    <span class="absolute left-3 top-2 text-slate-500 font-mono text-xs">$</span>
+                                    <input type="number" id="setting-labor-rate" step="0.50" min="0" oninput="recalculateLiveEstimate()" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg pl-7 pr-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-[#f96302]">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-medium text-slate-300 mb-1">Parts Markup (%)</label>
+                                <div class="relative">
+                                    <input type="number" id="setting-parts-markup" step="0.5" min="0" oninput="recalculateLiveEstimate()" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg pl-3 pr-7 py-2 text-xs text-white font-mono focus:outline-none focus:border-[#f96302]">
+                                    <span class="absolute right-3 top-2 text-slate-500 font-mono text-xs">%</span>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-medium text-slate-300 mb-1">Sales Tax Rate (%)</label>
+                                <div class="relative">
+                                    <input type="number" id="setting-tax-rate" step="0.05" min="0" oninput="recalculateLiveEstimate()" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg pl-3 pr-7 py-2 text-xs text-white font-mono focus:outline-none focus:border-[#f96302]">
+                                    <span class="absolute right-3 top-2 text-slate-500 font-mono text-xs">%</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <h3 class="font-mono text-xs font-bold uppercase text-[#f96302] border-b border-[#2a2b36] pb-3 pt-2">
+                            Shop Supplies & Environmental Fees
+                        </h3>
+
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                            <div class="space-y-3">
+                                <div>
+                                    <label class="block text-xs font-medium text-slate-300 mb-1">Shop Supplies Rate (% of Labor)</label>
+                                    <div class="relative">
+                                        <input type="number" id="setting-supplies-percent" step="0.5" min="0" oninput="recalculateLiveEstimate()" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg pl-3 pr-7 py-2 text-xs text-white font-mono focus:outline-none focus:border-[#f96302]">
+                                        <span class="absolute right-3 top-2 text-slate-500 font-mono text-xs">%</span>
+                                    </div>
+                                </div>
+
+                                <div class="bg-[#121214] p-3 rounded-lg border border-[#2a2b36] space-y-2">
+                                    <div class="flex items-center justify-between">
+                                        <label for="setting-supplies-cap-toggle" class="text-xs font-bold text-white cursor-pointer">Cap Maximum Supplies Fee</label>
+                                        <input type="checkbox" id="setting-supplies-cap-toggle" onchange="recalculateLiveEstimate()" class="w-4 h-4 accent-[#f96302] cursor-pointer">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] text-slate-400 mb-1">Maximum Supplies Fee Cap ($)</label>
+                                        <div class="relative">
+                                            <span class="absolute left-3 top-1.5 text-slate-500 font-mono text-xs">$</span>
+                                            <input type="number" id="setting-supplies-max" step="1.00" min="0" oninput="recalculateLiveEstimate()" class="w-full bg-[#1e1e24] border border-[#2a2b36] rounded px-7 py-1 text-xs text-white font-mono focus:outline-none focus:border-[#f96302]">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-medium text-slate-300 mb-1">Hazardous Disposal Fee ($ Flat Rate)</label>
+                                <div class="relative">
+                                    <span class="absolute left-3 top-2 text-slate-500 font-mono text-xs">$</span>
+                                    <input type="number" id="setting-hazmat-fee" step="0.50" min="0" oninput="recalculateLiveEstimate()" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg pl-7 pr-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-[#f96302]">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right: Live Estimate Simulator -->
+                <div class="lg:col-span-1 industrial-card p-6 rounded-xl flex flex-col justify-between">
+                    <div>
+                        <h3 class="font-brand text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2 border-b border-[#2a2b36] pb-3">
+                            <i class="fa-solid fa-calculator text-[#f96302]"></i> Live Estimate Simulator
+                        </h3>
+                        <div class="mt-4 space-y-3 bg-[#121214] p-4 rounded-xl border border-[#2a2b36]">
+                            <div>
+                                <label class="block text-[10px] uppercase font-mono text-slate-400">Simulated Labor Hours</label>
+                                <input type="number" id="sim-hours" value="2.5" step="0.5" min="0" oninput="recalculateLiveEstimate()" class="w-full bg-[#1e1e24] border border-[#2a2b36] rounded px-2.5 py-1 text-xs text-white font-mono focus:outline-none focus:border-[#f96302]">
+                            </div>
+                            <div>
+                                <label class="block text-[10px] uppercase font-mono text-slate-400">Simulated Parts Wholesale Cost ($)</label>
+                                <input type="number" id="sim-parts-cost" value="120.00" step="5" min="0" oninput="recalculateLiveEstimate()" class="w-full bg-[#1e1e24] border border-[#2a2b36] rounded px-2.5 py-1 text-xs text-white font-mono focus:outline-none focus:border-[#f96302]">
+                            </div>
+                        </div>
+
+                        <div class="mt-4 space-y-2 text-xs">
+                            <div class="flex justify-between text-slate-400"><span>Labor Subtotal:</span><span id="sim-out-labor" class="font-mono text-white">$0.00</span></div>
+                            <div class="flex justify-between text-slate-400"><span>Parts Retail:</span><span id="sim-out-parts" class="font-mono text-white">$0.00</span></div>
+                            <div class="flex justify-between text-slate-400"><span>Shop Supplies:</span><span id="sim-out-supplies" class="font-mono text-white">$0.00</span></div>
+                            <div class="flex justify-between text-slate-400"><span>Hazmat Fee:</span><span id="sim-out-hazmat" class="font-mono text-white">$0.00</span></div>
+                            <div class="flex justify-between text-slate-400"><span>Sales Tax:</span><span id="sim-out-tax" class="font-mono text-white">$0.00</span></div>
+                            <div class="flex justify-between text-sm font-bold text-white border-t border-[#2a2b36] pt-2"><span>Customer Total:</span><span id="sim-out-total" class="font-mono text-[#f96302]">$0.00</span></div>
+                        </div>
+                    </div>
+                    <div class="mt-6 pt-4 border-t border-[#2a2b36] bg-[#121214] p-3 rounded-lg border text-center">
+                        <span class="text-[10px] font-mono text-slate-400">Estimated Shop Profit Margin:</span>
+                        <div id="sim-out-profit" class="font-mono font-bold text-emerald-400 text-sm mt-0.5">$0.00 (0%)</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sub-Tab 2: Invoice Header & Contact -->
+            <div id="subtab-invoice" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="industrial-card p-6 rounded-xl space-y-4">
+                    <h3 class="font-mono text-xs font-bold uppercase text-[#f96302] border-b border-[#2a2b36] pb-3">
+                        Shop Name & Printed Contact Info
+                    </h3>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-300 mb-1">Shop Name Header *</label>
+                        <input type="text" id="setting-shop-name" oninput="updateSettingsLivePreview()" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-300 mb-1">Shop Subtitle / Tagline</label>
+                        <input type="text" id="setting-shop-tagline" oninput="updateSettingsLivePreview()" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Address Line 1</label>
+                            <input type="text" id="setting-address-1" oninput="updateSettingsLivePreview()" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Address Line 2 (Suite/Bay)</label>
+                            <input type="text" id="setting-address-2" oninput="updateSettingsLivePreview()" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-3">
+                        <div class="col-span-2">
+                            <label class="block text-xs font-medium text-slate-300 mb-1">City, State Zip</label>
+                            <input type="text" id="setting-city-state-zip" oninput="updateSettingsLivePreview()" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Phone Number</label>
+                            <input type="text" id="setting-phone" oninput="updateSettingsLivePreview()" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-300 mb-1">Shop Email Address</label>
+                        <input type="email" id="setting-email" oninput="updateSettingsLivePreview()" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                    <h3 class="font-mono text-xs font-bold uppercase text-[#f96302] border-b border-[#2a2b36] pb-2 pt-2">
+                        Printed Logo Branding Option
+                    </h3>
+                    <div class="space-y-2">
+                        <label class="block text-xs font-medium text-slate-300">Select Printed Logo Style</label>
+                        <select id="setting-logo-style" onchange="toggleCustomLogoInput(); updateSettingsLivePreview();" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                            <option value="vtwin">Official Welker's Garage V-Twin SVG Logo</option>
+                            <option value="custom">Custom Uploaded Image URL</option>
+                            <option value="none">Text Only (No Logo)</option>
+                        </select>
+                    </div>
+                    <div id="container-custom-logo-url" class="hidden">
+                        <label class="block text-xs font-medium text-slate-300 mb-1">Custom Image Logo URL</label>
+                        <input type="url" id="setting-custom-logo-url" oninput="updateSettingsLivePreview()" placeholder="https://example.com/shop-logo.png" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                </div>
+
+                <div class="industrial-card p-6 rounded-xl flex flex-col">
+                    <h3 class="font-brand text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2 border-b border-[#2a2b36] pb-3 mb-4">
+                        <i class="fa-solid fa-eye text-[#f96302]"></i> Live Invoice Header Preview
+                    </h3>
+                    <div id="settings-header-preview-box" class="bg-white text-slate-900 p-6 rounded-xl border border-slate-300 space-y-4 flex-1"></div>
+                </div>
+            </div>
+
+            <!-- Sub-Tab 3: Terms & Layout Control -->
+            <div id="subtab-terms" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="industrial-card p-6 rounded-xl space-y-6">
+                    <div>
+                        <h3 class="font-mono text-xs font-bold uppercase text-[#f96302] border-b border-[#2a2b36] pb-3 mb-3">
+                            Terms of Service & Legal Disclaimer
+                        </h3>
+                        <label class="block text-xs font-medium text-slate-300 mb-1">Printable Warranty & Authorization Disclaimer Text</label>
+                        <textarea id="setting-warranty-terms" rows="4" oninput="updateSettingsLivePreview()" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg p-3 text-xs text-white leading-relaxed focus:outline-none focus:border-[#f96302]"></textarea>
+                    </div>
+
+                    <div class="space-y-3 border-t border-[#2a2b36] pt-4">
+                        <h3 class="font-mono text-xs font-bold uppercase text-[#f96302]">Display Toggles for Printed Work Orders</h3>
+                        <div class="grid grid-cols-2 gap-3 text-xs">
+                            <div class="flex items-center gap-2 bg-[#121214] p-3 rounded-lg border border-[#2a2b36]">
+                                <input type="checkbox" id="setting-show-signature" checked onchange="updateSettingsLivePreview()" class="w-4 h-4 accent-[#f96302] cursor-pointer">
+                                <label for="setting-show-signature" class="cursor-pointer font-medium text-slate-300">Customer Signature Line</label>
+                            </div>
+                            <div class="flex items-center gap-2 bg-[#121214] p-3 rounded-lg border border-[#2a2b36]">
+                                <input type="checkbox" id="setting-show-vin" checked onchange="updateSettingsLivePreview()" class="w-4 h-4 accent-[#f96302] cursor-pointer">
+                                <label for="setting-show-vin" class="cursor-pointer font-medium text-slate-300">Show VIN #</label>
+                            </div>
+                            <div class="flex items-center gap-2 bg-[#121214] p-3 rounded-lg border border-[#2a2b36]">
+                                <input type="checkbox" id="setting-show-mileage" checked onchange="updateSettingsLivePreview()" class="w-4 h-4 accent-[#f96302] cursor-pointer">
+                                <label for="setting-show-mileage" class="cursor-pointer font-medium text-slate-300">Show Mileage / Hours</label>
+                            </div>
+                            <div class="flex items-center gap-2 bg-[#121214] p-3 rounded-lg border border-[#2a2b36]">
+                                <input type="checkbox" id="setting-show-notes" checked onchange="updateSettingsLivePreview()" class="w-4 h-4 accent-[#f96302] cursor-pointer">
+                                <label for="setting-show-notes" class="cursor-pointer font-medium text-slate-300">Show Job Request Notes</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="space-y-3 border-t border-[#2a2b36] pt-4">
+                        <h3 class="font-mono text-xs font-bold uppercase text-[#f96302]">Rearrange Printed Invoice Sections</h3>
+                        <div class="space-y-2" id="section-reorder-container">
+                            <div class="flex items-center justify-between bg-[#121214] p-2.5 rounded-lg border border-[#2a2b36] text-xs">
+                                <span>1. Customer & Vehicle Info Box</span>
+                                <select id="order-pos-0" onchange="updateSectionOrderState()" class="bg-[#1e1e24] border border-[#2a2b36] text-white rounded px-2 py-1 text-xs">
+                                    <option value="customer_info" selected>Position 1</option>
+                                    <option value="job_notes">Position 2</option>
+                                    <option value="line_items">Position 3</option>
+                                </select>
+                            </div>
+                            <div class="flex items-center justify-between bg-[#121214] p-2.5 rounded-lg border border-[#2a2b36] text-xs">
+                                <span>2. Work Requested / Job Complaint</span>
+                                <select id="order-pos-1" onchange="updateSectionOrderState()" class="bg-[#1e1e24] border border-[#2a2b36] text-white rounded px-2 py-1 text-xs">
+                                    <option value="customer_info">Position 1</option>
+                                    <option value="job_notes" selected>Position 2</option>
+                                    <option value="line_items">Position 3</option>
+                                </select>
+                            </div>
+                            <div class="flex items-center justify-between bg-[#121214] p-2.5 rounded-lg border border-[#2a2b36] text-xs">
+                                <span>3. Itemized Labor & Parts Breakdown Table</span>
+                                <select id="order-pos-2" onchange="updateSectionOrderState()" class="bg-[#1e1e24] border border-[#2a2b36] text-white rounded px-2 py-1 text-xs">
+                                    <option value="customer_info">Position 1</option>
+                                    <option value="job_notes">Position 2</option>
+                                    <option value="line_items" selected>Position 3</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="industrial-card p-6 rounded-xl flex flex-col max-h-[800px] overflow-hidden">
+                    <h3 class="font-brand text-xs font-bold text-white uppercase tracking-wider flex items-center justify-between border-b border-[#2a2b36] pb-3 mb-4">
+                        <span><i class="fa-solid fa-file-invoice text-[#f96302] mr-2"></i> Full Document Layout Preview</span>
+                        <span class="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">Live Sync</span>
+                    </h3>
+                    <div id="settings-full-doc-preview" class="bg-white text-slate-900 p-6 rounded-xl border border-slate-300 space-y-4 overflow-y-auto flex-1 text-xs"></div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Mobile Bottom Navigation Bar -->
+    <div class="fixed bottom-0 left-0 right-0 bg-[#1e1e24] border-t-2 border-[#2a2b36] flex justify-around py-2 md:hidden z-40">
+        <button onclick="switchTab('workOrders')" id="mb-tab-workOrders" class="flex flex-col items-center text-[#f96302] text-xs font-bold">
+            <i class="fa-solid fa-file-invoice-dollar text-base mb-1"></i> Orders
+        </button>
+        <button onclick="switchTab('customers')" id="mb-tab-customers" class="flex flex-col items-center text-slate-400 text-xs font-medium">
+            <i class="fa-solid fa-users text-base mb-1"></i> Customers
+        </button>
+        <button onclick="switchTab('inventory')" id="mb-tab-inventory" class="flex flex-col items-center text-slate-400 text-xs font-medium">
+            <i class="fa-solid fa-boxes-stacked text-base mb-1"></i> Stock
+        </button>
+        <button onclick="switchTab('purchaseOrders')" id="mb-tab-purchaseOrders" class="flex flex-col items-center text-slate-400 text-xs font-medium">
+            <i class="fa-solid fa-cart-shopping text-base mb-1"></i> POs
+        </button>
+        <button onclick="switchTab('presets')" id="mb-tab-presets" class="flex flex-col items-center text-slate-400 text-xs font-medium">
+            <i class="fa-solid fa-bolt text-base mb-1"></i> Presets
+        </button>
+        <button onclick="switchTab('settings')" id="mb-tab-settings" class="flex flex-col items-center text-slate-400 text-xs font-medium">
+            <i class="fa-solid fa-sliders text-base mb-1"></i> Settings
+        </button>
+    </div>
+
+    <!-- ================= MODAL: WORK ORDER CREATE / EDIT ================= -->
+    <div id="modal-wo" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
+        <div class="industrial-card rounded-2xl max-w-4xl w-full max-h-[92vh] flex flex-col overflow-hidden my-auto">
+            <div class="px-6 py-4 border-b border-[#2a2b36] flex items-center justify-between bg-[#121214]">
+                <h3 id="modal-wo-title" class="font-brand text-base font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-wrench text-[#f96302]"></i> Work Order Form
+                </h3>
+                <button onclick="closeWorkOrderModal()" class="text-slate-400 hover:text-white p-2"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+
+            <form id="form-wo" onsubmit="saveWorkOrder(event)" class="p-6 overflow-y-auto space-y-6 flex-1">
+                <input type="hidden" id="wo-id">
+
+                <div class="bg-[#121214] p-3 rounded-xl border border-[#2a2b36] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                    <div class="text-xs font-mono text-slate-300 flex items-center gap-2">
+                        <i class="fa-solid fa-bolt text-[#f96302]"></i> Select Registered Customer & Vehicle:
+                    </div>
+                    <select id="wo-quick-cust-veh" onchange="autoFillWOFromCustomer(this.value)" class="w-full sm:w-auto flex-1 bg-[#1e1e24] border border-[#2a2b36] rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                        <option value="">-- Choose registered customer / bike --</option>
+                    </select>
+                </div>
+
+                <div class="space-y-3">
+                    <h4 class="text-xs font-mono uppercase font-bold text-[#f96302]">1. Customer Information</h4>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-400 mb-1">Customer Name *</label>
+                            <input type="text" id="wo-cust-name" required class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-400 mb-1">Phone Number *</label>
+                            <input type="text" id="wo-cust-phone" required class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-400 mb-1">Email Address</label>
+                            <input type="email" id="wo-cust-email" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="space-y-3">
+                    <h4 class="text-xs font-mono uppercase font-bold text-[#f96302]">2. Vehicle / Equipment Specs</h4>
+                    <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                        <div class="sm:col-span-2">
+                            <label class="block text-[11px] font-medium text-slate-400 mb-1">Year / Make / Model *</label>
+                            <input type="text" id="wo-vehicle" required placeholder="e.g. 2023 Harley Street Glide" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-400 mb-1">VIN / Serial # *</label>
+                            <input type="text" id="wo-vin" required placeholder="1HD1KAE..." class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302] font-mono uppercase">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-400 mb-1">Mileage / Hours</label>
+                            <input type="text" id="wo-mileage" placeholder="8,400 mi" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Work Order Status</label>
+                        <select id="wo-status" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                            <option value="Draft">Draft</option>
+                            <option value="In Progress">In Progress</option>
+                            <option value="Waiting on Parts">Waiting on Parts</option>
+                            <option value="Completed">Completed (Auto Deduct Stock)</option>
+                            <option value="Invoiced">Invoiced / Paid</option>
+                        </select>
+                    </div>
+                    <div class="sm:col-span-2">
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Work Requested / Complaint Notes</label>
+                        <input type="text" id="wo-notes" placeholder="e.g. 10k mile service & noise in primary..." class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                </div>
+
+                <!-- Line Items Table -->
+                <div class="space-y-3">
+                    <div class="flex items-center justify-between">
+                        <h4 class="text-xs font-mono uppercase font-bold text-[#f96302]">3. Itemized Labor & Parts</h4>
+                        <div class="flex flex-wrap gap-2">
+                            <button type="button" onclick="addWOLineItem('Labor')" class="bg-[#2a2b36] hover:bg-slate-700 text-xs px-3 py-1.5 rounded-lg border border-slate-700 transition">+ Add Labor</button>
+                            <button type="button" onclick="openPartPickerModal()" class="bg-[#2a2b36] hover:bg-slate-700 text-xs px-3 py-1.5 rounded-lg border border-slate-700 transition">+ Stock Part</button>
+                            <button type="button" onclick="addWOLineItem('Part', '', 1, 0, null, true)" class="bg-[#2a2b36] hover:bg-slate-700 text-xs px-3 py-1.5 rounded-lg border border-[#f96302]/50 text-[#f96302] transition">+ Non-Inventory Part</button>
+                        </div>
+                    </div>
+
+                    <div class="border border-[#2a2b36] rounded-xl overflow-hidden bg-[#121214]">
+                        <table class="w-full text-left text-xs">
+                            <thead class="bg-[#1e1e24] text-slate-400 uppercase font-mono text-[10px]">
+                                <tr>
+                                    <th class="py-2.5 px-3">Type</th>
+                                    <th class="py-2.5 px-3">Description</th>
+                                    <th class="py-2.5 px-3 text-center w-20">Qty/Hrs</th>
+                                    <th class="py-2.5 px-3 text-right w-24">Price ($)</th>
+                                    <th class="py-2.5 px-3 text-right w-24">Total</th>
+                                    <th class="py-2.5 px-3 text-center w-10"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="wo-items-body" class="divide-y divide-[#2a2b36]"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="bg-[#121214] border border-[#2a2b36] p-4 rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                    <div class="space-y-2 text-xs text-slate-300">
+                        <div class="flex items-center gap-2">
+                            <input type="checkbox" id="wo-toggle-supplies" checked onchange="updateWOCalc()" class="w-4 h-4 accent-[#f96302] cursor-pointer">
+                            <label for="wo-toggle-supplies" class="cursor-pointer">Apply Shop Supplies Fee</label>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <input type="checkbox" id="wo-toggle-hazmat" checked onchange="updateWOCalc()" class="w-4 h-4 accent-[#f96302] cursor-pointer">
+                            <label for="wo-toggle-hazmat" class="cursor-pointer">Apply Hazardous Disposal Fee</label>
+                        </div>
+                    </div>
+
+                    <div class="w-full sm:w-64 space-y-1.5 text-xs">
+                        <div class="flex justify-between text-slate-400"><span>Subtotal:</span><span id="wo-calc-subtotal" class="font-mono text-white font-bold">$0.00</span></div>
+                        <div class="flex justify-between text-slate-400"><span>Shop Supplies:</span><span id="wo-calc-supplies" class="font-mono text-white">$0.00</span></div>
+                        <div class="flex justify-between text-slate-400"><span>Hazmat Fee:</span><span id="wo-calc-hazmat" class="font-mono text-white">$0.00</span></div>
+                        <div class="flex justify-between text-slate-400"><span>Sales Tax:</span><span id="wo-calc-tax" class="font-mono text-white">$0.00</span></div>
+                        <div class="flex justify-between text-sm font-bold text-white border-t border-[#2a2b36] pt-2"><span>Grand Total:</span><span id="wo-calc-total" class="font-mono text-[#f96302]">$0.00</span></div>
+                    </div>
+                </div>
+
+                <div class="flex justify-end gap-3 pt-4 border-t border-[#2a2b36]">
+                    <button type="button" onclick="closeWorkOrderModal()" class="bg-[#2a2b36] text-slate-300 px-4 py-2 rounded-lg text-xs font-bold">Cancel</button>
+                    <button type="submit" class="bg-[#f96302] text-black font-extrabold px-6 py-2 rounded-lg text-xs uppercase tracking-wider industrial-btn">Save Work Order</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================= MODAL: PURCHASE ORDER CREATE / EDIT (NEW) ================= -->
+    <div id="modal-po" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
+        <div class="industrial-card rounded-2xl max-w-3xl w-full max-h-[90vh] flex flex-col overflow-hidden my-auto">
+            <div class="px-6 py-4 border-b border-[#2a2b36] flex items-center justify-between bg-[#121214]">
+                <h3 id="modal-po-title" class="font-brand text-base font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-cart-shopping text-[#f96302]"></i> Purchase Order Form
+                </h3>
+                <button onclick="closePurchaseOrderModal()" class="text-slate-400 hover:text-white p-2"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+
+            <form id="form-po" onsubmit="savePurchaseOrder(event)" class="p-6 overflow-y-auto space-y-6 flex-1">
+                <input type="hidden" id="po-id">
+
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Vendor / Supplier *</label>
+                        <input type="text" id="po-vendor" required placeholder="e.g. Drag Specialties" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Expected Delivery</label>
+                        <input type="date" id="po-date" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">PO Status</label>
+                        <select id="po-status" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                            <option value="Pending">Pending Order</option>
+                            <option value="Shipped">Shipped / In Transit</option>
+                            <option value="Received">Received & Restocked</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="space-y-3">
+                    <div class="flex items-center justify-between">
+                        <h4 class="text-xs font-mono uppercase font-bold text-[#f96302]">PO Items / Supplies Ordered</h4>
+                        <button type="button" onclick="addPOLineItem()" class="bg-[#2a2b36] hover:bg-slate-700 text-xs px-3 py-1.5 rounded-lg border border-slate-700 transition">+ Add PO Item</button>
+                    </div>
+
+                    <div class="border border-[#2a2b36] rounded-xl overflow-hidden bg-[#121214]">
+                        <table class="w-full text-left text-xs">
+                            <thead class="bg-[#1e1e24] text-slate-400 uppercase font-mono text-[10px]">
+                                <tr>
+                                    <th class="py-2.5 px-3">Part # / SKU</th>
+                                    <th class="py-2.5 px-3">Description</th>
+                                    <th class="py-2.5 px-3 text-center w-20">Qty</th>
+                                    <th class="py-2.5 px-3 text-right w-24">Cost ($)</th>
+                                    <th class="py-2.5 px-3 text-right w-24">Total</th>
+                                    <th class="py-2.5 px-3 text-center w-10"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="po-items-body" class="divide-y divide-[#2a2b36]"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="flex justify-end gap-3 pt-4 border-t border-[#2a2b36]">
+                    <button type="button" onclick="closePurchaseOrderModal()" class="bg-[#2a2b36] text-slate-300 px-4 py-2 rounded-lg text-xs font-bold">Cancel</button>
+                    <button type="submit" class="bg-[#f96302] text-black font-extrabold px-6 py-2 rounded-lg text-xs uppercase tracking-wider industrial-btn">Save Purchase Order</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================= MODAL: CUSTOMER EDIT ================= -->
+    <div id="modal-cust" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="industrial-card rounded-2xl max-w-md w-full overflow-hidden">
+            <div class="px-6 py-4 border-b border-[#2a2b36] flex items-center justify-between bg-[#121214]">
+                <h3 id="modal-cust-title" class="font-brand text-base font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-user text-[#f96302]"></i> Customer Record
+                </h3>
+                <button onclick="closeCustomerModal()" class="text-slate-400 hover:text-white p-2"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+
+            <form id="form-cust" onsubmit="saveCustomerRecord(event)" class="p-6 space-y-4">
+                <input type="hidden" id="cust-id">
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-400 mb-1">Full Name *</label>
+                    <input type="text" id="cust-name" required placeholder="e.g. Dave Welker" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Phone Number *</label>
+                        <input type="text" id="cust-phone" required placeholder="(555) 000-0000" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Email Address</label>
+                        <input type="email" id="cust-email" placeholder="client@welker.com" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-400 mb-1">Street Address</label>
+                    <input type="text" id="cust-address" placeholder="1042 Gearbox Way" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-400 mb-1">Customer Notes / VIP Tags</label>
+                    <textarea id="cust-notes" rows="2" placeholder="Prefers synth oils, commercial fleet..." class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]"></textarea>
+                </div>
+                <div class="flex justify-end gap-3 pt-4 border-t border-[#2a2b36]">
+                    <button type="button" onclick="closeCustomerModal()" class="bg-[#2a2b36] text-slate-300 px-4 py-2 rounded-lg text-xs font-bold">Cancel</button>
+                    <button type="submit" class="bg-[#f96302] text-black font-extrabold px-6 py-2 rounded-lg text-xs uppercase tracking-wider industrial-btn">Save Customer</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================= MODAL: VEHICLE EDIT & VIN DECODER ================= -->
+    <div id="modal-veh" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="industrial-card rounded-2xl max-w-lg w-full overflow-hidden">
+            <div class="px-6 py-4 border-b border-[#2a2b36] flex items-center justify-between bg-[#121214]">
+                <h3 id="modal-veh-title" class="font-brand text-base font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-motorcycle text-[#f96302]"></i> Register Vehicle & VIN
+                </h3>
+                <button onclick="closeVehicleModal()" class="text-slate-400 hover:text-white p-2"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+
+            <form id="form-veh" onsubmit="saveVehicleRecord(event)" class="p-6 space-y-4">
+                <input type="hidden" id="veh-id">
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-400 mb-1">Owner / Customer *</label>
+                    <select id="veh-cust-id" required class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]"></select>
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-400 mb-1">VIN (Vehicle Identification Number) *</label>
+                    <div class="flex gap-2">
+                        <input type="text" id="veh-vin" required uppercase placeholder="1HD1KAE14NB00..." class="flex-1 uppercase font-mono bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                        <button type="button" onclick="decodeVinTool()" class="bg-[#2a2b36] hover:bg-slate-700 text-[#f96302] border border-[#2a2b36] px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-barcode"></i> Decode VIN</button>
+                    </div>
+                </div>
+                <div class="grid grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Year *</label>
+                        <input type="text" id="veh-year" required placeholder="2023" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Make *</label>
+                        <input type="text" id="veh-make" required placeholder="Harley-Davidson" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Model *</label>
+                        <input type="text" id="veh-model" required placeholder="Street Glide" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Mileage / Hours</label>
+                        <input type="text" id="veh-mileage" placeholder="12,400 mi" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">License Plate</label>
+                        <input type="text" id="veh-plate" placeholder="MC-8012" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                </div>
+                <div class="flex justify-end gap-3 pt-4 border-t border-[#2a2b36]">
+                    <button type="button" onclick="closeVehicleModal()" class="bg-[#2a2b36] text-slate-300 px-4 py-2 rounded-lg text-xs font-bold">Cancel</button>
+                    <button type="submit" class="bg-[#f96302] text-black font-extrabold px-6 py-2 rounded-lg text-xs uppercase tracking-wider industrial-btn">Save Vehicle</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================= MODAL: INVENTORY PART EDIT ================= -->
+    <div id="modal-inv" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="industrial-card rounded-2xl max-w-md w-full overflow-hidden">
+            <div class="px-6 py-4 border-b border-[#2a2b36] flex items-center justify-between bg-[#121214]">
+                <h3 id="modal-inv-title" class="font-brand text-base font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-box text-[#f96302]"></i> Add Inventory Item
+                </h3>
+                <button onclick="closeInventoryModal()" class="text-slate-400 hover:text-white p-2"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+
+            <form id="form-inv" onsubmit="saveInventoryPart(event)" class="p-6 space-y-4">
+                <input type="hidden" id="inv-id">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Part Number *</label>
+                        <input type="text" id="inv-part-no" required placeholder="HD-63798-05A" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Category</label>
+                        <select id="inv-cat" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                            <option value="Filters">Filters</option>
+                            <option value="Fluids & Oils">Fluids & Oils</option>
+                            <option value="Brakes">Brakes</option>
+                            <option value="Tires">Tires</option>
+                            <option value="Spark Plugs & Ignition">Spark Plugs & Ignition</option>
+                            <option value="Hardware">Hardware</option>
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-400 mb-1">Description / Item Name *</label>
+                    <input type="text" id="inv-name" required placeholder="Chrome Oil Filter" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Stock Quantity *</label>
+                        <input type="number" id="inv-qty" required min="0" value="10" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Min Threshold Alert *</label>
+                        <input type="number" id="inv-min" required min="0" value="3" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Wholesale Cost ($) *</label>
+                        <input type="number" id="inv-cost" required step="0.01" min="0" placeholder="11.50" oninput="autoCalculateRetailPrice(this.value)" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Retail Selling Price ($) *</label>
+                        <input type="number" id="inv-retail" required step="0.01" min="0" placeholder="18.95" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                </div>
+                <div class="flex justify-end gap-3 pt-4 border-t border-[#2a2b36]">
+                    <button type="button" onclick="closeInventoryModal()" class="bg-[#2a2b36] text-slate-300 px-4 py-2 rounded-lg text-xs font-bold">Cancel</button>
+                    <button type="submit" class="bg-[#f96302] text-black font-extrabold px-6 py-2 rounded-lg text-xs uppercase tracking-wider industrial-btn">Save Part</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================= MODAL: PRESET EDIT ================= -->
+    <div id="modal-preset" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="industrial-card rounded-2xl max-w-md w-full overflow-hidden">
+            <div class="px-6 py-4 border-b border-[#2a2b36] flex items-center justify-between bg-[#121214]">
+                <h3 id="modal-preset-title" class="font-brand text-base font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-bolt text-[#f96302]"></i> Service Preset Package
+                </h3>
+                <button onclick="closePresetModal()" class="text-slate-400 hover:text-white p-2"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+
+            <form id="form-preset" onsubmit="saveServicePreset(event)" class="p-6 space-y-4">
+                <input type="hidden" id="preset-id">
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-400 mb-1">Package Name *</label>
+                    <input type="text" id="preset-name" required placeholder="e.g. 3-Hole Fluid Change" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-400 mb-1">Description *</label>
+                    <textarea id="preset-desc" required rows="2" placeholder="Full fluid refresh: Engine oil, transmission, and primary..." class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]"></textarea>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Default Labor Hours *</label>
+                        <input type="number" id="preset-hours" required step="0.25" min="0" value="2.5" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Package Price ($) *</label>
+                        <input type="number" id="preset-price" required step="0.01" min="0" value="299.00" class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                    </div>
+                </div>
+                <div class="flex justify-end gap-3 pt-4 border-t border-[#2a2b36]">
+                    <button type="button" onclick="closePresetModal()" class="bg-[#2a2b36] text-slate-300 px-4 py-2 rounded-lg text-xs font-bold">Cancel</button>
+                    <button type="submit" class="bg-[#f96302] text-black font-extrabold px-6 py-2 rounded-lg text-xs uppercase tracking-wider industrial-btn">Save Preset</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================= MODAL: INVENTORY PICKER ================= -->
+    <div id="modal-picker" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="industrial-card rounded-2xl max-w-lg w-full max-h-[80vh] flex flex-col overflow-hidden">
+            <div class="px-6 py-4 border-b border-[#2a2b36] flex items-center justify-between bg-[#121214]">
+                <h3 class="font-brand text-base font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-boxes-stacked text-[#f96302]"></i> Select Part from Stock
+                </h3>
+                <button onclick="closePartPickerModal()" class="text-slate-400 hover:text-white p-2"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <div class="p-4 border-b border-[#2a2b36]">
+                <input type="text" id="picker-search" oninput="renderPartPickerList()" placeholder="Search part # or name..." class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#f96302]">
+            </div>
+            <div class="p-4 overflow-y-auto flex-1">
+                <table class="w-full text-left text-xs">
+                    <thead class="bg-[#121214] text-slate-400 uppercase font-mono text-[10px]">
+                        <tr>
+                            <th class="py-2 px-3">Part #</th>
+                            <th class="py-2 px-3">Description</th>
+                            <th class="py-2 px-3 text-center">Stock</th>
+                            <th class="py-2 px-3 text-right">Retail</th>
+                            <th class="py-2 px-3 text-center">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="picker-items-body" class="divide-y divide-[#2a2b36]"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= MODAL: FIREBASE CONFIG ================= -->
+    <div id="modal-config" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="industrial-card rounded-2xl max-w-lg w-full overflow-hidden">
+            <div class="px-6 py-4 border-b border-[#2a2b36] flex items-center justify-between bg-[#121214]">
+                <h3 class="font-brand text-base font-bold text-white flex items-center gap-3">
+                    <svg class="w-7 h-7 text-[#f96302]" viewBox="0 0 200 170" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M 45 42 L 85 28 L 75 14 L 35 28 Z" fill="#1e1e24" />
+                        <path d="M 155 42 L 115 28 L 125 14 L 165 28 Z" fill="#1e1e24" />
+                        <path d="M 45 45 L 85 58 M 42 55 L 85 69 M 39 65 L 85 80 M 36 75 L 85 91 M 33 85 L 85 102 M 30 95 L 85 113" stroke-width="4" />
+                        <path d="M 155 45 L 115 58 M 158 55 L 115 69 M 161 65 L 115 80 M 164 75 L 115 91 M 167 85 L 115 102 M 170 95 L 115 113" stroke-width="4" />
+                        <path d="M 70 120 L 70 145 C 70 158 130 158 130 145 L 130 120 Z" fill="#1e1e24" />
+                        <ellipse cx="100" cy="55" rx="26" ry="24" fill="#121214" stroke="#ffffff" stroke-width="5" />
+                        <text x="100" y="52" text-anchor="middle" font-family="'Orbitron', sans-serif" font-weight="900" font-size="20" fill="#ffffff" stroke="none">W</text>
+                        <text x="100" y="70" text-anchor="middle" font-family="'Orbitron', sans-serif" font-weight="900" font-size="18" fill="#f96302" stroke="none">G</text>
+                    </svg>
+                    Firebase Real-Time Cloud Config
+                </h3>
+                <button onclick="closeConfigModal()" class="text-slate-400 hover:text-white p-2"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <div class="p-6 space-y-4 text-xs text-slate-300">
+                <p>Paste your custom Firebase JSON configuration below to sync desktop & mobile devices in real time.</p>
+                <textarea id="config-json-input" rows="6" placeholder='{
+  "apiKey": "AIzaSy...",
+  "authDomain": "welkers-garage.firebaseapp.com",
+  "projectId": "welkers-garage",
+  "storageBucket": "welkers-garage.appspot.com",
+  "messagingSenderId": "123456789",
+  "appId": "1:123456789:web:abcdef"
+}' class="w-full bg-[#121214] border border-[#2a2b36] rounded-lg p-3 font-mono text-slate-200 focus:outline-none focus:border-[#f96302] text-xs"></textarea>
+                <div class="flex justify-between items-center pt-3 border-t border-[#2a2b36]">
+                    <button type="button" onclick="clearFirebaseConfig()" class="text-rose-400 hover:underline">Clear & Use Local Storage</button>
+                    <div class="flex gap-2">
+                        <button type="button" onclick="closeConfigModal()" class="bg-[#2a2b36] text-slate-300 px-4 py-2 rounded-lg font-bold">Cancel</button>
+                        <button type="button" onclick="saveFirebaseConfig()" class="bg-[#f96302] text-black font-extrabold px-5 py-2 rounded-lg industrial-btn">Save & Connect</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= PRINT / EXPORT VIEW ================= -->
+    <div id="modal-print" class="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm hidden flex items-center justify-center p-4 overflow-y-auto">
+        <div class="bg-white text-slate-900 rounded-2xl max-w-3xl w-full max-h-[95vh] flex flex-col overflow-hidden shadow-2xl">
+            <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-100 no-print">
+                <h3 class="text-sm font-bold text-slate-900 flex items-center gap-2">
+                    <i class="fa-solid fa-print text-[#f96302]"></i> Work Order Print Preview
+                </h3>
+                <div class="flex items-center gap-2">
+                    <button onclick="window.print()" class="bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2"><i class="fa-solid fa-print"></i> Print Invoice</button>
+                    <button onclick="closePrintPreview()" class="text-slate-500 hover:text-slate-900 p-2"><i class="fa-solid fa-xmark text-lg"></i></button>
+                </div>
+            </div>
+            <div id="printable-invoice" class="p-8 overflow-y-auto flex-1 bg-white"></div>
+        </div>
+    </div>
+
+    <!-- Core App Logic -->
+    <script>
+        let currentWOLineItems = [];
+        let currentPOLineItems = [];
+
+        function switchTab(tabId) {
+            window.shopState.currentView = tabId;
+            document.querySelectorAll('section[id^="tab-"]').forEach(el => el.classList.add('hidden'));
+            document.getElementById(`tab-${tabId}`).classList.remove('hidden');
+
+            ['workOrders', 'customers', 'inventory', 'purchaseOrders', 'presets', 'settings'].forEach(t => {
+                const dtBtn = document.getElementById(`dt-tab-${t}`);
+                if (dtBtn) {
+                    if (t === tabId) dtBtn.className = "px-3 py-2 rounded-lg bg-[#f96302] text-black font-extrabold flex items-center gap-1.5 industrial-btn";
+                    else dtBtn.className = "px-3 py-2 rounded-lg text-slate-300 hover:text-white hover:bg-[#2a2b36] flex items-center gap-1.5 transition";
+                }
+                const mbBtn = document.getElementById(`mb-tab-${t}`);
+                if (mbBtn) {
+                    if (t === tabId) mbBtn.className = "flex flex-col items-center text-[#f96302] text-xs font-bold";
+                    else mbBtn.className = "flex flex-col items-center text-slate-400 text-xs font-medium";
+                }
+            });
+            window.renderAllViews();
+        }
+
+        function switchSettingsSubTab(subId) {
+            ['financial', 'invoice', 'terms'].forEach(s => {
+                const el = document.getElementById(`subtab-${s}`);
+                const btn = document.getElementById(`subtab-btn-${s}`);
+                if (s === subId) {
+                    el.classList.remove('hidden');
+                    btn.className = "px-4 py-2 border-b-2 border-[#f96302] text-[#f96302] font-bold";
+                } else {
+                    el.classList.add('hidden');
+                    btn.className = "px-4 py-2 text-slate-400 hover:text-white";
+                }
+            });
+            updateSettingsLivePreview();
+        }
+
+        window.renderAllViews = function() {
+            renderWorkOrders();
+            renderCustomersAndVehicles();
+            renderInventory();
+            renderPurchaseOrders();
+            renderPresets();
+            populateSettingsForm();
+            populateWOCustomerDropdown();
+            recalculateLiveEstimate();
+            updateSettingsLivePreview();
+            applyHeaderBranding();
+        };
+
+        function applyHeaderBranding() {
+            const s = window.shopState.settings;
+            document.getElementById('header-shop-name').innerHTML = `${s.shopName || "WELKER'S GARAGE"} <span class="text-[10px] uppercase font-sans font-bold bg-[#f96302]/10 text-[#f96302] border border-[#f96302]/30 px-2 py-0.5 rounded">SHOP PRO</span>`;
+            document.getElementById('header-shop-tagline').innerText = s.shopTagline || "SERVICE & INVENTORY HUB";
+        }
+
+        window.saveLocalStorageFallback = function() {
+            localStorage.setItem('welkers_garage_local_data', JSON.stringify({
+                workOrders: window.shopState.workOrders,
+                inventory: window.shopState.inventory,
+                purchaseOrders: window.shopState.purchaseOrders,
+                presets: window.shopState.presets,
+                customers: window.shopState.customers,
+                vehicles: window.shopState.vehicles,
+                settings: window.shopState.settings
+            }));
+        };
+
+        window.loadLocalStorageFallback = function() {
+            const raw = localStorage.getItem('welkers_garage_local_data');
+            if (raw) {
+                try {
+                    const parsed = JSON.parse(raw);
+                    window.shopState.workOrders = parsed.workOrders || [];
+                    window.shopState.inventory = parsed.inventory || [];
+                    window.shopState.purchaseOrders = parsed.purchaseOrders || [];
+                    window.shopState.presets = parsed.presets || [];
+                    window.shopState.customers = parsed.customers || [];
+                    window.shopState.vehicles = parsed.vehicles || [];
+                    window.shopState.settings = { ...window.shopState.settings, ...(parsed.settings || {}) };
+                } catch(e){}
+            }
+            if (!window.shopState.inventory.length) seedSampleInventory();
+            if (!window.shopState.purchaseOrders.length) seedSamplePO();
+            if (!window.shopState.presets.length) seedSamplePresets();
+            if (!window.shopState.customers.length) seedSampleCustomersAndVehicles();
+            if (!window.shopState.workOrders.length) seedSampleWorkOrders();
+            window.renderAllViews();
+        };
+
+        function seedSampleCustomersAndVehicles() {
+            const sampleCusts = [
+                { id: 'c1', name: 'Jake Redding', phone: '(555) 839-2001', email: 'jake@example.com', address: '402 Oak Street', notes: 'Prefers Screamin Eagle Synth Oils.' },
+                { id: 'c2', name: 'Sarah Jenkins', phone: '(555) 492-1188', email: 'sarah.j@example.com', address: '12 Harbor Rd', notes: 'VIP Fleet Account' }
+            ];
+            const sampleVehs = [
+                { id: 'v1', custId: 'c1', vin: '1HD1KAE14NB001042', year: '2023', make: 'Harley-Davidson', model: 'Street Glide', mileage: '12,400 mi', plate: 'MC-8910' },
+                { id: 'v2', custId: 'c2', vin: '53KBBAC22LC008311', year: '2020', make: 'Indian', model: 'Scout Bobber', mileage: '6,120 mi', plate: 'MC-4192' }
+            ];
+            sampleCusts.forEach(c => window.saveCustomerCloud(c));
+            sampleVehs.forEach(v => window.saveVehicleCloud(v));
+        }
+
+        function seedSampleInventory() {
+            const sampleParts = [
+                { id: 'i1', partNo: 'HD-63798-05A', cat: 'Filters', name: 'Harley Chrome Oil Filter', qty: 14, min: 3, cost: 11.50, retail: 18.95 },
+                { id: 'i2', partNo: 'NGK-CPR9E', cat: 'Spark Plugs & Ignition', name: 'NGK Iridium Spark Plug', qty: 2, min: 4, cost: 6.50, retail: 14.99 },
+                { id: 'i3', partNo: 'SYN-20W50-QT', cat: 'Fluids & Oils', name: "Screamin' Eagle 20W50 Synthetic (Qt)", qty: 28, min: 6, cost: 9.20, retail: 16.50 },
+                { id: 'i4', partNo: 'EBC-FA409HH', cat: 'Brakes', name: 'EBC Double-H Sintered Front Brake Pads', qty: 8, min: 2, cost: 24.00, retail: 42.50 }
+            ];
+            sampleParts.forEach(p => window.savePartCloud(p));
+        }
+
+        function seedSamplePO() {
+            const samplePOs = [
+                {
+                    id: 'po-1',
+                    poNo: 'PO-501',
+                    vendor: 'Drag Specialties',
+                    date: new Date().toISOString().split('T')[0],
+                    status: 'Pending',
+                    items: [
+                        { partNo: 'HD-63798-05A', desc: 'Harley Chrome Oil Filter', qty: 10, cost: 11.50 },
+                        { partNo: 'SYN-20W50-QT', desc: "Screamin' Eagle 20W50 Synthetic", qty: 24, cost: 9.20 }
+                    ]
+                }
+            ];
+            samplePOs.forEach(p => window.savePurchaseOrderCloud(p));
+        }
+
+        function seedSamplePresets() {
+            const samplePresets = [
+                { id: 'p1', name: '3-Hole Fluid Refresh', desc: 'Full fluid replacement: Engine oil, transmission oil, and primary lube.', hours: 2.5, price: 299.00 },
+                { id: 'p2', name: 'Brake Pad & Rotor Service', desc: 'Flush DOT 4 brake fluid, install sintered pads, calibrate calipers.', hours: 1.5, price: 165.00 },
+                { id: 'p3', name: 'Tire Mount & Dynamic Balance', desc: 'Remove wheel assembly, mount new rubber, dynamic spin balance, replace valve stems.', hours: 1.2, price: 120.00 }
+            ];
+            samplePresets.forEach(pr => window.savePresetCloud(pr));
+        }
+
+        function seedSampleWorkOrders() {
+            const sampleWOs = [
+                {
+                    id: 'w1',
+                    woNo: 'WO-1042',
+                    date: new Date().toISOString().split('T')[0],
+                    custName: 'Jake Redding',
+                    custPhone: '(555) 839-2001',
+                    custEmail: 'jake@example.com',
+                    vehicle: '2023 Harley Street Glide',
+                    vin: '1HD1KAE14NB001042',
+                    mileage: '12,400 mi',
+                    status: 'In Progress',
+                    notes: '10,000 Mile Full Service & Check Primary Noise',
+                    applySupplies: true,
+                    applyHazmat: true,
+                    items: [
+                        { type: 'Labor', desc: '10K Major Service Labor', qty: 3.5, price: 95.00 },
+                        { type: 'Part', desc: 'Harley Chrome Oil Filter (HD-63798-05A)', qty: 1, price: 18.95, partId: 'i1' },
+                        { type: 'Part', desc: "Screamin' Eagle 20W50 Oil (SYN-20W50-QT)", qty: 4, price: 16.50, partId: 'i3' },
+                        { type: 'Part', desc: 'Walk-In Custom Grips (Non-Inventory)', qty: 1, price: 45.00, isNonInventory: true }
+                    ]
+                }
+            ];
+            sampleWOs.forEach(w => window.saveWorkOrderCloud(w));
+        }
+
+        // ================= SETTINGS LOGIC =================
+        function populateSettingsForm() {
+            const s = window.shopState.settings;
+            if (!document.getElementById('setting-labor-rate')) return;
+            
+            document.getElementById('setting-labor-rate').value = s.laborRate;
+            document.getElementById('setting-parts-markup').value = s.partsMarkup;
+            document.getElementById('setting-tax-rate').value = s.salesTaxRate;
+            document.getElementById('setting-supplies-percent').value = s.shopSuppliesPercent;
+            document.getElementById('setting-supplies-cap-toggle').checked = s.capShopSupplies;
+            document.getElementById('setting-supplies-max').value = s.maxShopSupplies;
+            document.getElementById('setting-hazmat-fee').value = s.hazmatFee;
+
+            document.getElementById('setting-shop-name').value = s.shopName || "WELKER'S GARAGE";
+            document.getElementById('setting-shop-tagline').value = s.shopTagline || "Service & Performance Center";
+            document.getElementById('setting-address-1').value = s.addressLine1 || "";
+            document.getElementById('setting-address-2').value = s.addressLine2 || "";
+            document.getElementById('setting-city-state-zip').value = s.cityStateZip || "";
+            document.getElementById('setting-phone').value = s.shopPhone || "";
+            document.getElementById('setting-email').value = s.shopEmail || "";
+
+            document.getElementById('setting-logo-style').value = s.logoStyle || "vtwin";
+            document.getElementById('setting-custom-logo-url').value = s.customLogoUrl || "";
+            toggleCustomLogoInput();
+
+            document.getElementById('setting-warranty-terms').value = s.warrantyTerms || "";
+            document.getElementById('setting-show-signature').checked = s.showSignatureBlock !== false;
+            document.getElementById('setting-show-vin').checked = s.showVinOnPrint !== false;
+            document.getElementById('setting-show-mileage').checked = s.showMileageOnPrint !== false;
+            document.getElementById('setting-show-notes').checked = s.showNotesOnPrint !== false;
+        }
+
+        function toggleCustomLogoInput() {
+            const val = document.getElementById('setting-logo-style').value;
+            const container = document.getElementById('container-custom-logo-url');
+            if (val === 'custom') container.classList.remove('hidden');
+            else container.classList.add('hidden');
+        }
+
+        function updateSectionOrderState() {
+            const p0 = document.getElementById('order-pos-0').value;
+            const p1 = document.getElementById('order-pos-1').value;
+            const p2 = document.getElementById('order-pos-2').value;
+            window.shopState.settings.sectionOrder = [p0, p1, p2, 'totals', 'terms'];
+            updateSettingsLivePreview();
+        }
+
+        async function saveShopSettingsForm() {
+            const updated = {
+                laborRate: parseFloat(document.getElementById('setting-labor-rate').value) || 0,
+                partsMarkup: parseFloat(document.getElementById('setting-parts-markup').value) || 0,
+                salesTaxRate: parseFloat(document.getElementById('setting-tax-rate').value) || 0,
+                shopSuppliesPercent: parseFloat(document.getElementById('setting-supplies-percent').value) || 0,
+                capShopSupplies: document.getElementById('setting-supplies-cap-toggle').checked,
+                maxShopSupplies: parseFloat(document.getElementById('setting-supplies-max').value) || 0,
+                hazmatFee: parseFloat(document.getElementById('setting-hazmat-fee').value) || 0,
+
+                shopName: document.getElementById('setting-shop-name').value,
+                shopTagline: document.getElementById('setting-shop-tagline').value,
+                addressLine1: document.getElementById('setting-address-1').value,
+                addressLine2: document.getElementById('setting-address-2').value,
+                cityStateZip: document.getElementById('setting-city-state-zip').value,
+                shopPhone: document.getElementById('setting-phone').value,
+                shopEmail: document.getElementById('setting-email').value,
+
+                logoStyle: document.getElementById('setting-logo-style').value,
+                customLogoUrl: document.getElementById('setting-custom-logo-url').value,
+
+                warrantyTerms: document.getElementById('setting-warranty-terms').value,
+                showSignatureBlock: document.getElementById('setting-show-signature').checked,
+                showVinOnPrint: document.getElementById('setting-show-vin').checked,
+                showMileageOnPrint: document.getElementById('setting-show-mileage').checked,
+                showNotesOnPrint: document.getElementById('setting-show-notes').checked
+            };
+            await window.saveSettingsCloud(updated);
+            alert("Shop settings & invoice customization saved!");
+        }
+
+        function updateSettingsLivePreview() {
+            const s = {
+                shopName: document.getElementById('setting-shop-name')?.value || "WELKER'S GARAGE",
+                shopTagline: document.getElementById('setting-shop-tagline')?.value || "",
+                addressLine1: document.getElementById('setting-address-1')?.value || "",
+                addressLine2: document.getElementById('setting-address-2')?.value || "",
+                cityStateZip: document.getElementById('setting-city-state-zip')?.value || "",
+                shopPhone: document.getElementById('setting-phone')?.value || "",
+                shopEmail: document.getElementById('setting-email')?.value || "",
+                logoStyle: document.getElementById('setting-logo-style')?.value || "vtwin",
+                customLogoUrl: document.getElementById('setting-custom-logo-url')?.value || "",
+                warrantyTerms: document.getElementById('setting-warranty-terms')?.value || "",
+                showSignatureBlock: document.getElementById('setting-show-signature')?.checked,
+                showVinOnPrint: document.getElementById('setting-show-vin')?.checked,
+                showMileageOnPrint: document.getElementById('setting-show-mileage')?.checked,
+                showNotesOnPrint: document.getElementById('setting-show-notes')?.checked
+            };
+
+            const headerBox = document.getElementById('settings-header-preview-box');
+            if (headerBox) {
+                headerBox.innerHTML = generateInvoiceHeaderHTML(s, 'WO-EX100');
+            }
+
+            const docBox = document.getElementById('settings-full-doc-preview');
+            if (docBox) {
+                const sampleWO = window.shopState.workOrders[0] || {
+                    woNo: 'WO-1042',
+                    date: new Date().toISOString().split('T')[0],
+                    custName: 'Jake Redding',
+                    custPhone: '(555) 839-2001',
+                    custEmail: 'jake@example.com',
+                    vehicle: '2023 Harley Street Glide',
+                    vin: '1HD1KAE14NB001042',
+                    mileage: '12,400 mi',
+                    status: 'In Progress',
+                    notes: '10,000 Mile Full Service & Check Primary Noise',
+                    items: [
+                        { type: 'Labor', desc: '10K Major Service Labor', qty: 3.5, price: 95.00 },
+                        { type: 'Part', desc: 'Harley Chrome Oil Filter', qty: 1, price: 18.95 }
+                    ]
+                };
+                docBox.innerHTML = generateFullInvoiceDocumentHTML(sampleWO, s);
+            }
+        }
+
+        function getLogoHTML(logoStyle, customUrl, cssClasses = "w-16 h-16") {
+            if (logoStyle === 'custom' && customUrl) {
+                return `<img src="${customUrl}" alt="Logo" class="${cssClasses} object-contain" onerror="this.src='https://placehold.co/100x100/1e1e24/f96302?text=WG'">`;
+            }
+            if (logoStyle === 'none') {
+                return '';
+            }
+            return `
+                <svg class="${cssClasses} text-slate-900" viewBox="0 0 200 170" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M 45 42 L 85 28 L 75 14 L 35 28 Z" fill="#ffffff" />
+                    <path d="M 155 42 L 115 28 L 125 14 L 165 28 Z" fill="#ffffff" />
+                    <path d="M 45 45 L 85 58 M 42 55 L 85 69 M 39 65 L 85 80 M 36 75 L 85 91 M 33 85 L 85 102 M 30 95 L 85 113" stroke-width="4" />
+                    <path d="M 155 45 L 115 58 M 158 55 L 115 69 M 161 65 L 115 80 M 164 75 L 115 91 M 167 85 L 115 102 M 170 95 L 115 113" stroke-width="4" />
+                    <path d="M 70 120 L 70 145 C 70 158 130 158 130 145 L 130 120 Z" fill="#ffffff" />
+                    <path d="M 82 128 L 82 142 C 82 150 118 150 118 142 L 118 128 Z" stroke-width="4" />
+                    <ellipse cx="100" cy="55" rx="26" ry="24" fill="#ffffff" stroke="#f96302" stroke-width="6" />
+                    <text x="100" y="52" text-anchor="middle" font-family="'Orbitron', sans-serif" font-weight="900" font-size="20" fill="#000000" stroke="none">W</text>
+                    <text x="100" y="70" text-anchor="middle" font-family="'Orbitron', sans-serif" font-weight="900" font-size="18" fill="#f96302" stroke="none">G</text>
+                </svg>
+            `;
+        }
+
+        function generateInvoiceHeaderHTML(s, woNo = 'WO-1001') {
+            const logoHtml = getLogoHTML(s.logoStyle, s.customLogoUrl, "w-16 h-16");
+            const addr2 = s.addressLine2 ? `${s.addressLine2}, ` : '';
+            return `
+                <div class="flex justify-between items-start border-b-2 border-slate-900 pb-4">
+                    <div class="flex items-center gap-4">
+                        ${logoHtml}
+                        <div>
+                            <h2 class="text-xl font-black tracking-tight text-slate-900">${s.shopName}</h2>
+                            <p class="text-xs text-slate-600 font-bold uppercase">${s.shopTagline}</p>
+                            <p class="text-xs text-slate-600">${s.addressLine1} ${addr2}${s.cityStateZip}</p>
+                            <p class="text-xs text-slate-600">Ph: ${s.shopPhone} | ${s.shopEmail}</p>
+                        </div>
+                    </div>
+                    <div class="text-right">
+                        <h3 class="text-lg font-extrabold text-[#f96302]">${woNo}</h3>
+                        <p class="text-xs text-slate-600">Date: ${new Date().toISOString().split('T')[0]}</p>
+                        <span class="mt-1 inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800">In Progress</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        function generateFullInvoiceDocumentHTML(wo, s) {
+            const totals = calculateWOTotals(wo);
+            const blocks = {
+                customer_info: `
+                    <div class="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs">
+                        <div>
+                            <h4 class="font-bold uppercase text-slate-400 mb-1">Customer</h4>
+                            <p class="font-bold text-slate-900">${wo.custName}</p>
+                            <p class="text-slate-600">${wo.custPhone}</p>
+                            <p class="text-slate-600">${wo.custEmail || ''}</p>
+                        </div>
+                        <div>
+                            <h4 class="font-bold uppercase text-slate-400 mb-1">Vehicle / Equipment</h4>
+                            <p class="font-bold text-slate-900">${wo.vehicle}</p>
+                            ${s.showVinOnPrint ? `<p class="text-slate-600">VIN: ${wo.vin || 'N/A'}</p>` : ''}
+                            ${s.showMileageOnPrint ? `<p class="text-slate-600">Mileage: ${wo.mileage || 'N/A'}</p>` : ''}
+                        </div>
+                    </div>
+                `,
+                job_notes: s.showNotesOnPrint ? `
+                    <div>
+                        <h4 class="text-xs font-bold text-slate-400 uppercase mb-1">Work Requested / Complaint:</h4>
+                        <p class="text-xs text-slate-800 bg-amber-50 p-3 rounded-lg border border-amber-200 font-medium">${wo.notes || 'Standard service request'}</p>
+                    </div>
+                ` : '',
+                line_items: `
+                    <div>
+                        <table class="w-full text-left text-xs">
+                            <thead class="bg-slate-900 text-white font-mono uppercase">
+                                <tr>
+                                    <th class="py-2 px-3">Type</th>
+                                    <th class="py-2 px-3">Description</th>
+                                    <th class="py-2 px-3 text-center">Qty/Hrs</th>
+                                    <th class="py-2 px-3 text-right">Price</th>
+                                    <th class="py-2 px-3 text-right">Total</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-200">
+                                ${(wo.items || []).map(i => `
+                                    <tr>
+                                        <td class="py-2 px-3 font-semibold text-slate-700">${i.type}</td>
+                                        <td class="py-2 px-3 text-slate-900">${i.desc} ${i.isNonInventory ? '<span class="text-[9px] bg-slate-200 px-1.5 py-0.5 rounded text-slate-600 font-mono">Walk-In</span>' : ''}</td>
+                                        <td class="py-2 px-3 text-center font-mono">${i.qty}</td>
+                                        <td class="py-2 px-3 text-right font-mono">$${parseFloat(i.price).toFixed(2)}</td>
+                                        <td class="py-2 px-3 text-right font-mono font-bold">$${(i.qty * i.price).toFixed(2)}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `
+            };
+
+            const order = s.sectionOrder || ['customer_info', 'job_notes', 'line_items', 'totals', 'terms'];
+            const orderedContent = order.map(k => blocks[k] || '').join('');
+
+            return `
+                ${generateInvoiceHeaderHTML(s, wo.woNo)}
+                ${orderedContent}
+                
+                <div class="flex justify-end pt-3 border-t border-slate-300">
+                    <div class="w-64 space-y-1 text-xs">
+                        <div class="flex justify-between text-slate-600"><span>Subtotal:</span><span class="font-mono font-bold">$${totals.subtotal.toFixed(2)}</span></div>
+                        <div class="flex justify-between text-slate-600"><span>Shop Supplies:</span><span class="font-mono font-bold">$${totals.suppliesFee.toFixed(2)}</span></div>
+                        <div class="flex justify-between text-slate-600"><span>Hazmat Fee:</span><span class="font-mono font-bold">$${totals.hazmatFee.toFixed(2)}</span></div>
+                        <div class="flex justify-between text-slate-600"><span>Sales Tax:</span><span class="font-mono font-bold">$${totals.salesTax.toFixed(2)}</span></div>
+                        <div class="flex justify-between font-bold text-slate-900 border-t border-slate-300 pt-1 text-sm">
+                            <span>Grand Total:</span><span class="font-mono text-[#f96302]">$${totals.grandTotal.toFixed(2)}</span>
+                        </div>
+                    </div>
+                </div>
+
+                ${s.warrantyTerms ? `<div class="mt-4 pt-3 border-t border-slate-200 text-[10px] text-slate-500 leading-relaxed"><strong class="uppercase font-bold text-slate-700">Terms & Warranty:</strong> ${s.warrantyTerms}</div>` : ''}
+
+                ${s.showSignatureBlock ? `
+                    <div class="mt-8 pt-6 border-t border-slate-300 grid grid-cols-2 gap-6 text-[10px] text-slate-500">
+                        <div><p class="border-t border-slate-400 pt-1">Customer Authorization Signature</p></div>
+                        <div><p class="border-t border-slate-400 pt-1">Technician Sign-Off</p></div>
+                    </div>
+                ` : ''}
+            `;
+        }
+
+        function recalculateLiveEstimate() {
+            const laborRate = parseFloat(document.getElementById('setting-labor-rate')?.value) || 95;
+            const partsMarkup = parseFloat(document.getElementById('setting-parts-markup')?.value) || 25;
+            const taxRate = (parseFloat(document.getElementById('setting-tax-rate')?.value) || 7.5) / 100;
+            const suppliesPercent = (parseFloat(document.getElementById('setting-supplies-percent')?.value) || 10) / 100;
+            const capSupplies = document.getElementById('setting-supplies-cap-toggle')?.checked;
+            const maxSupplies = parseFloat(document.getElementById('setting-supplies-max')?.value) || 35;
+            const hazmatFee = parseFloat(document.getElementById('setting-hazmat-fee')?.value) || 10;
+
+            const simHours = parseFloat(document.getElementById('sim-hours')?.value) || 0;
+            const simPartsCost = parseFloat(document.getElementById('sim-parts-cost')?.value) || 0;
+
+            const simLaborSubtotal = simHours * laborRate;
+            const simPartsRetail = simPartsCost + (simPartsCost * (partsMarkup / 100));
+
+            let simSuppliesFee = simLaborSubtotal * suppliesPercent;
+            if (capSupplies && simSuppliesFee > maxSupplies) simSuppliesFee = maxSupplies;
+
+            const simSubtotalNoTax = simLaborSubtotal + simPartsRetail + simSuppliesFee + hazmatFee;
+            const simTax = simSubtotalNoTax * taxRate;
+            const simGrandTotal = simSubtotalNoTax + simTax;
+
+            const totalCost = simPartsCost + (simHours * 35);
+            const estimatedProfit = simGrandTotal - simTax - totalCost;
+            const marginPercent = simGrandTotal > 0 ? (estimatedProfit / (simGrandTotal - simTax)) * 100 : 0;
+
+            if (document.getElementById('sim-out-labor')) {
+                document.getElementById('sim-out-labor').innerText = `$${simLaborSubtotal.toFixed(2)}`;
+                document.getElementById('sim-out-parts').innerText = `$${simPartsRetail.toFixed(2)}`;
+                document.getElementById('sim-out-supplies').innerText = `$${simSuppliesFee.toFixed(2)}`;
+                document.getElementById('sim-out-hazmat').innerText = `$${hazmatFee.toFixed(2)}`;
+                document.getElementById('sim-out-tax').innerText = `$${simTax.toFixed(2)}`;
+                document.getElementById('sim-out-total').innerText = `$${simGrandTotal.toFixed(2)}`;
+                document.getElementById('sim-out-profit').innerText = `$${estimatedProfit.toFixed(2)} (${marginPercent.toFixed(1)}%)`;
+            }
+        }
+
+        function autoCalculateRetailPrice(costVal) {
+            const cost = parseFloat(costVal) || 0;
+            const markup = (window.shopState.settings.partsMarkup || 25) / 100;
+            const retail = cost + (cost * markup);
+            document.getElementById('inv-retail').value = retail.toFixed(2);
+        }
+
+        // ================= WORK ORDERS LOGIC =================
+        function renderWorkOrders() {
+            const query = document.getElementById('wo-search').value.toLowerCase();
+            const statusFilter = document.getElementById('wo-filter-status').value;
+            const tbody = document.getElementById('wo-table-body');
+            tbody.innerHTML = '';
+
+            const wos = window.shopState.workOrders || [];
+            const activeCount = wos.filter(w => w.status !== 'Completed' && w.status !== 'Invoiced').length;
+            const completedCount = wos.filter(w => w.status === 'Completed' || w.status === 'Invoiced').length;
+            document.getElementById('stat-wo-active').innerText = activeCount;
+            document.getElementById('stat-wo-completed').innerText = completedCount;
+
+            const filtered = wos.filter(w => {
+                const matchesQ = (w.custName||'').toLowerCase().includes(query) || (w.vehicle||'').toLowerCase().includes(query) || (w.woNo||'').toLowerCase().includes(query);
+                const matchesS = statusFilter === 'ALL' || w.status === statusFilter;
+                return matchesQ && matchesS;
+            });
+
+            if (filtered.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" class="py-8 text-center text-slate-500 font-mono">No work orders recorded yet.</td></tr>`;
+                return;
+            }
+
+            filtered.slice().reverse().forEach(wo => {
+                const totals = calculateWOTotals(wo);
+                tbody.innerHTML += `
+                    <tr class="hover:bg-[#121214]/50 transition">
+                        <td class="py-3.5 px-4 font-mono font-bold text-[#f96302]">${wo.woNo}</td>
+                        <td class="py-3.5 px-4">
+                            <div class="font-bold text-white">${wo.custName}</div>
+                            <div class="text-[11px] text-slate-400">${wo.custPhone}</div>
+                        </td>
+                        <td class="py-3.5 px-4">
+                            <div class="font-medium text-slate-200">${wo.vehicle}</div>
+                            <div class="text-[11px] text-slate-500 font-mono">${wo.vin || 'N/A'}</div>
+                        </td>
+                        <td class="py-3.5 px-4">
+                            <span class="px-2.5 py-1 rounded text-[11px] font-bold ${getStatusBadgeStyle(wo.status)}">${wo.status}</span>
+                        </td>
+                        <td class="py-3.5 px-4 text-right font-mono font-bold text-white">$${totals.grandTotal.toFixed(2)}</td>
+                        <td class="py-3.5 px-4 text-center space-x-2">
+                            <button onclick="openPrintPreview('${wo.id}')" class="text-slate-400 hover:text-white p-1.5" title="Print Invoice"><i class="fa-solid fa-print"></i></button>
+                            <button onclick="editWorkOrder('${wo.id}')" class="text-[#f96302] hover:text-amber-400 p-1.5" title="Edit"><i class="fa-solid fa-pen-to-square"></i></button>
+                            <button onclick="deleteWorkOrder('${wo.id}')" class="text-rose-400 hover:text-rose-300 p-1.5" title="Delete"><i class="fa-solid fa-trash"></i></button>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+
+        function calculateWOTotals(wo) {
+            const s = window.shopState.settings;
+            let laborSubtotal = 0;
+            let partsSubtotal = 0;
+
+            (wo.items || []).forEach(item => {
+                const lineTotal = item.qty * item.price;
+                if (item.type === 'Labor') laborSubtotal += lineTotal;
+                else partsSubtotal += lineTotal;
+            });
+
+            const subtotal = laborSubtotal + partsSubtotal;
+            let suppliesFee = 0;
+            if (wo.applySupplies !== false) {
+                suppliesFee = laborSubtotal * ((s.shopSuppliesPercent || 10) / 100);
+                if (s.capShopSupplies && suppliesFee > s.maxShopSupplies) suppliesFee = s.maxShopSupplies;
+            }
+
+            let hazmatFee = wo.applyHazmat !== false ? (s.hazmatFee || 10) : 0;
+            const taxableAmount = subtotal + suppliesFee + hazmatFee;
+            const salesTax = taxableAmount * ((s.salesTaxRate || 7.5) / 100);
+            const grandTotal = taxableAmount + salesTax;
+
+            return { subtotal, suppliesFee, hazmatFee, salesTax, grandTotal };
+        }
+
+        function getStatusBadgeStyle(status) {
+            switch(status) {
+                case 'Draft': return 'bg-slate-800 text-slate-300 border border-slate-700';
+                case 'In Progress': return 'bg-[#f96302]/20 text-[#f96302] border border-[#f96302]/30';
+                case 'Waiting on Parts': return 'bg-purple-500/20 text-purple-300 border border-purple-500/30';
+                case 'Completed': return 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+                case 'Invoiced': return 'bg-blue-500/20 text-blue-300 border border-blue-500/30';
+                default: return 'bg-slate-800 text-slate-300';
+            }
+        }
+
+        function openWorkOrderModal() {
+            document.getElementById('modal-wo-title').innerHTML = `<i class="fa-solid fa-wrench text-[#f96302]"></i> New Work Order`;
+            document.getElementById('wo-id').value = '';
+            document.getElementById('form-wo').reset();
+            currentWOLineItems = [];
+            document.getElementById('wo-toggle-supplies').checked = true;
+            document.getElementById('wo-toggle-hazmat').checked = true;
+            renderWOLineItems();
+            document.getElementById('modal-wo').classList.remove('hidden');
+        }
+
+        function editWorkOrder(id) {
+            const wo = window.shopState.workOrders.find(w => w.id === id);
+            if (!wo) return;
+
+            document.getElementById('modal-wo-title').innerHTML = `<i class="fa-solid fa-pen-to-square text-[#f96302]"></i> Edit ${wo.woNo}`;
+            document.getElementById('wo-id').value = wo.id;
+            document.getElementById('wo-cust-name').value = wo.custName || '';
+            document.getElementById('wo-cust-phone').value = wo.custPhone || '';
+            document.getElementById('wo-cust-email').value = wo.custEmail || '';
+            document.getElementById('wo-vehicle').value = wo.vehicle || '';
+            document.getElementById('wo-vin').value = wo.vin || '';
+            document.getElementById('wo-mileage').value = wo.mileage || '';
+            document.getElementById('wo-status').value = wo.status || 'Draft';
+            document.getElementById('wo-notes').value = wo.notes || '';
+
+            document.getElementById('wo-toggle-supplies').checked = wo.applySupplies !== false;
+            document.getElementById('wo-toggle-hazmat').checked = wo.applyHazmat !== false;
+
+            currentWOLineItems = JSON.parse(JSON.stringify(wo.items || []));
+            renderWOLineItems();
+            document.getElementById('modal-wo').classList.remove('hidden');
+        }
+
+        function closeWorkOrderModal() {
+            document.getElementById('modal-wo').classList.add('hidden');
+        }
+
+        function addWOLineItem(type, desc = '', qty = 1, price = null, partId = null, isNonInventory = false) {
+            if (price === null) {
+                price = type === 'Labor' ? (window.shopState.settings.laborRate || 95) : 0.00;
+            }
+            currentWOLineItems.push({ type, desc, qty, price, partId, isNonInventory });
+            renderWOLineItems();
+        }
+
+        function removeWOLineItem(idx) {
+            currentWOLineItems.splice(idx, 1);
+            renderWOLineItems();
+        }
+
+        function updateWOLineItemField(idx, field, val) {
+            currentWOLineItems[idx][field] = field === 'desc' ? val : parseFloat(val) || 0;
+            updateWOCalc();
+        }
+
+        function renderWOLineItems() {
+            const tbody = document.getElementById('wo-items-body');
+            tbody.innerHTML = '';
+
+            if (currentWOLineItems.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-slate-500">No labor or parts added yet.</td></tr>`;
+            } else {
+                currentWOLineItems.forEach((item, idx) => {
+                    const lineTotal = item.qty * item.price;
+                    const badge = item.isNonInventory ? `<span class="text-[9px] bg-[#f96302]/20 text-[#f96302] px-1.5 py-0.5 rounded font-mono ml-1">Walk-In</span>` : '';
+                    tbody.innerHTML += `
+                        <tr>
+                            <td class="py-2 px-3">
+                                <span class="px-2 py-0.5 rounded text-[10px] font-bold ${item.type === 'Labor' ? 'bg-[#f96302]/20 text-[#f96302]' : 'bg-blue-500/20 text-blue-300'}">${item.type}</span> ${badge}
+                            </td>
+                            <td class="py-2 px-3">
+                                <input type="text" value="${item.desc}" oninput="updateWOLineItemField(${idx}, 'desc', this.value)" class="w-full bg-[#121214] border border-[#2a2b36] rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                            </td>
+                            <td class="py-2 px-3 text-center">
+                                <input type="number" step="0.25" min="0.1" value="${item.qty}" onchange="updateWOLineItemField(${idx}, 'qty', this.value)" class="w-16 bg-[#121214] border border-[#2a2b36] rounded px-2 py-1 text-xs text-center text-white focus:outline-none focus:border-[#f96302]">
+                            </td>
+                            <td class="py-2 px-3 text-right">
+                                <input type="number" step="0.01" min="0" value="${item.price}" onchange="updateWOLineItemField(${idx}, 'price', this.value)" class="w-20 bg-[#121214] border border-[#2a2b36] rounded px-2 py-1 text-xs text-right text-white focus:outline-none focus:border-[#f96302]">
+                            </td>
+                            <td class="py-2 px-3 text-right font-mono font-bold text-white">$${lineTotal.toFixed(2)}</td>
+                            <td class="py-2 px-3 text-center">
+                                <button type="button" onclick="removeWOLineItem(${idx})" class="text-rose-400 hover:text-rose-300"><i class="fa-solid fa-trash"></i></button>
+                            </td>
+                        </tr>
+                    `;
+                });
+            }
+            updateWOCalc();
+        }
+
+        function updateWOCalc() {
+            const applySupplies = document.getElementById('wo-toggle-supplies')?.checked;
+            const applyHazmat = document.getElementById('wo-toggle-hazmat')?.checked;
+            const dummyWO = { items: currentWOLineItems, applySupplies, applyHazmat };
+            const totals = calculateWOTotals(dummyWO);
+
+            document.getElementById('wo-calc-subtotal').innerText = `$${totals.subtotal.toFixed(2)}`;
+            document.getElementById('wo-calc-supplies').innerText = `$${totals.suppliesFee.toFixed(2)}`;
+            document.getElementById('wo-calc-hazmat').innerText = `$${totals.hazmatFee.toFixed(2)}`;
+            document.getElementById('wo-calc-tax').innerText = `$${totals.salesTax.toFixed(2)}`;
+            document.getElementById('wo-calc-total').innerText = `$${totals.grandTotal.toFixed(2)}`;
+        }
+
+        async function saveWorkOrder(e) {
+            e.preventDefault();
+            const editId = document.getElementById('wo-id').value;
+            const existingWO = window.shopState.workOrders.find(w => w.id === editId);
+            const newStatus = document.getElementById('wo-status').value;
+
+            const woData = {
+                id: editId || 'wo-' + Date.now(),
+                woNo: existingWO ? existingWO.woNo : `WO-${1000 + window.shopState.workOrders.length + 1}`,
+                date: existingWO ? existingWO.date : new Date().toISOString().split('T')[0],
+                custName: document.getElementById('wo-cust-name').value,
+                custPhone: document.getElementById('wo-cust-phone').value,
+                custEmail: document.getElementById('wo-cust-email').value,
+                vehicle: document.getElementById('wo-vehicle').value,
+                vin: document.getElementById('wo-vin').value,
+                mileage: document.getElementById('wo-mileage').value,
+                status: newStatus,
+                notes: document.getElementById('wo-notes').value,
+                applySupplies: document.getElementById('wo-toggle-supplies').checked,
+                applyHazmat: document.getElementById('wo-toggle-hazmat').checked,
+                items: [...currentWOLineItems]
+            };
+
+            if (newStatus === 'Completed' || newStatus === 'Invoiced') {
+                for (const item of woData.items) {
+                    if (item.type === 'Part' && item.partId && !item.isNonInventory) {
+                        const invItem = window.shopState.inventory.find(i => i.id === item.partId);
+                        if (invItem && invItem.qty > 0) {
+                            invItem.qty = Math.max(0, invItem.qty - item.qty);
+                            await window.savePartCloud(invItem);
+                        }
+                    }
+                }
+            }
+
+            await window.saveWorkOrderCloud(woData);
+            closeWorkOrderModal();
+        }
+
+        async function deleteWorkOrder(id) {
+            if (confirm('Delete this work order?')) {
+                await window.deleteWorkOrderCloud(id);
+            }
+        }
+
+        // ================= PURCHASE ORDERS LOGIC (NEW) =================
+        function renderPurchaseOrders() {
+            const tbody = document.getElementById('po-table-body');
+            tbody.innerHTML = '';
+            const pos = window.shopState.purchaseOrders || [];
+
+            const pendingCount = pos.filter(p => p.status !== 'Received').length;
+            const badge = document.getElementById('badge-po-count');
+            if (pendingCount > 0) {
+                badge.innerText = pendingCount;
+                badge.classList.remove('hidden');
+            } else {
+                badge.classList.add('hidden');
+            }
+
+            if (pos.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="7" class="py-8 text-center text-slate-500 font-mono">No purchase orders logged yet.</td></tr>`;
+                return;
+            }
+
+            pos.slice().reverse().forEach(po => {
+                let poTotal = 0;
+                (po.items || []).forEach(i => poTotal += (i.qty * i.cost));
+
+                const isReceived = po.status === 'Received';
+                const statusBadge = isReceived ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30';
+
+                tbody.innerHTML += `
+                    <tr class="hover:bg-[#121214]/50 transition">
+                        <td class="py-3.5 px-4 font-mono font-bold text-[#f96302]">${po.poNo}</td>
+                        <td class="py-3.5 px-4 font-bold text-white">${po.vendor}</td>
+                        <td class="py-3.5 px-4 text-slate-400">${po.date || 'N/A'}</td>
+                        <td class="py-3.5 px-4"><span class="px-2.5 py-1 rounded text-[11px] font-bold ${statusBadge}">${po.status}</span></td>
+                        <td class="py-3.5 px-4 text-right font-mono font-bold text-white">$${poTotal.toFixed(2)}</td>
+                        <td class="py-3.5 px-4 text-center">
+                            ${isReceived ? `<span class="text-xs text-emerald-400 font-bold"><i class="fa-solid fa-check mr-1"></i> Restocked</span>` : `<button onclick="receiveAndRestockPO('${po.id}')" class="bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30 px-3 py-1.5 rounded-lg text-xs font-bold transition"><i class="fa-solid fa-box-archive mr-1"></i> Receive & Restock</button>`}
+                        </td>
+                        <td class="py-3.5 px-4 text-center space-x-2">
+                            <button onclick="editPurchaseOrder('${po.id}')" class="text-[#f96302] hover:text-amber-400 p-1.5"><i class="fa-solid fa-pen-to-square"></i></button>
+                            <button onclick="deletePurchaseOrder('${po.id}')" class="text-rose-400 hover:text-rose-300 p-1.5"><i class="fa-solid fa-trash"></i></button>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+
+        function openPurchaseOrderModal() {
+            document.getElementById('modal-po-title').innerHTML = `<i class="fa-solid fa-cart-shopping text-[#f96302]"></i> Create Purchase Order`;
+            document.getElementById('po-id').value = '';
+            document.getElementById('form-po').reset();
+            document.getElementById('po-date').value = new Date().toISOString().split('T')[0];
+            currentPOLineItems = [];
+            renderPOLineItems();
+            document.getElementById('modal-po').classList.remove('hidden');
+        }
+
+        function editPurchaseOrder(id) {
+            const po = window.shopState.purchaseOrders.find(p => p.id === id);
+            if (!po) return;
+
+            document.getElementById('modal-po-title').innerHTML = `<i class="fa-solid fa-pen-to-square text-[#f96302]"></i> Edit ${po.poNo}`;
+            document.getElementById('po-id').value = po.id;
+            document.getElementById('po-vendor').value = po.vendor || '';
+            document.getElementById('po-date').value = po.date || '';
+            document.getElementById('po-status').value = po.status || 'Pending';
+
+            currentPOLineItems = JSON.parse(JSON.stringify(po.items || []));
+            renderPOLineItems();
+            document.getElementById('modal-po').classList.remove('hidden');
+        }
+
+        function closePurchaseOrderModal() {
+            document.getElementById('modal-po').classList.add('hidden');
+        }
+
+        function addPOLineItem(partNo = '', desc = '', qty = 5, cost = 10.00) {
+            currentPOLineItems.push({ partNo, desc, qty, cost });
+            renderPOLineItems();
+        }
+
+        function removePOLineItem(idx) {
+            currentPOLineItems.splice(idx, 1);
+            renderPOLineItems();
+        }
+
+        function updatePOLineItemField(idx, field, val) {
+            currentPOLineItems[idx][field] = (field === 'qty' || field === 'cost') ? parseFloat(val) || 0 : val;
+        }
+
+        function renderPOLineItems() {
+            const tbody = document.getElementById('po-items-body');
+            tbody.innerHTML = '';
+
+            if (currentPOLineItems.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-slate-500">No items added to PO yet.</td></tr>`;
+            } else {
+                currentPOLineItems.forEach((item, idx) => {
+                    const lineTotal = item.qty * item.cost;
+                    tbody.innerHTML += `
+                        <tr>
+                            <td class="py-2 px-3">
+                                <input type="text" value="${item.partNo}" oninput="updatePOLineItemField(${idx}, 'partNo', this.value)" placeholder="SKU / Part #" class="w-full bg-[#121214] border border-[#2a2b36] rounded px-2 py-1 text-xs text-white font-mono focus:outline-none focus:border-[#f96302]">
+                            </td>
+                            <td class="py-2 px-3">
+                                <input type="text" value="${item.desc}" oninput="updatePOLineItemField(${idx}, 'desc', this.value)" placeholder="Item Description" class="w-full bg-[#121214] border border-[#2a2b36] rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-[#f96302]">
+                            </td>
+                            <td class="py-2 px-3 text-center">
+                                <input type="number" min="1" value="${item.qty}" onchange="updatePOLineItemField(${idx}, 'qty', this.value)" class="w-16 bg-[#121214] border border-[#2a2b36] rounded px-2 py-1 text-xs text-center text-white focus:outline-none focus:border-[#f96302]">
+                            </td>
+                            <td class="py-2 px-3 text-right">
+                                <input type="number" step="0.01" min="0" value="${item.cost}" onchange="updatePOLineItemField(${idx}, 'cost', this.value)" class="w-20 bg-[#121214] border border-[#2a2b36] rounded px-2 py-1 text-xs text-right text-white focus:outline-none focus:border-[#f96302]">
+                            </td>
+                            <td class="py-2 px-3 text-right font-mono font-bold text-white">$${lineTotal.toFixed(2)}</td>
+                            <td class="py-2 px-3 text-center">
+                                <button type="button" onclick="removePOLineItem(${idx})" class="text-rose-400 hover:text-rose-300"><i class="fa-solid fa-trash"></i></button>
+                            </td>
+                        </tr>
+                    `;
+                });
+            }
+        }
+
+        async function savePurchaseOrder(e) {
+            e.preventDefault();
+            const editId = document.getElementById('po-id').value;
+            const existingPO = window.shopState.purchaseOrders.find(p => p.id === editId);
+
+            const poData = {
+                id: editId || 'po-' + Date.now(),
+                poNo: existingPO ? existingPO.poNo : `PO-${500 + window.shopState.purchaseOrders.length + 1}`,
+                vendor: document.getElementById('po-vendor').value,
+                date: document.getElementById('po-date').value,
+                status: document.getElementById('po-status').value,
+                items: [...currentPOLineItems]
+            };
+
+            await window.savePurchaseOrderCloud(poData);
+            closePurchaseOrderModal();
+        }
+
+        async function receiveAndRestockPO(id) {
+            const po = window.shopState.purchaseOrders.find(p => p.id === id);
+            if (!po || po.status === 'Received') return;
+
+            po.status = 'Received';
+            await window.savePurchaseOrderCloud(po);
+
+            // Auto Restock Inventory
+            for (const item of (po.items || [])) {
+                let invItem = window.shopState.inventory.find(i => (i.partNo || '').toLowerCase() === (item.partNo || '').toLowerCase());
+                if (invItem) {
+                    invItem.qty += item.qty;
+                    await window.savePartCloud(invItem);
+                } else {
+                    const newPart = {
+                        id: 'inv-' + Date.now() + Math.floor(Math.random()*1000),
+                        partNo: item.partNo || 'GEN-SKU',
+                        cat: 'Hardware',
+                        name: item.desc || 'Restocked Item',
+                        qty: item.qty,
+                        min: 3,
+                        cost: item.cost,
+                        retail: item.cost * 1.35
+                    };
+                    await window.savePartCloud(newPart);
+                }
+            }
+            alert(`Purchase Order ${po.poNo} received! Inventory stock levels updated successfully.`);
+            window.renderAllViews();
+        }
+
+        async function deletePurchaseOrder(id) {
+            if (confirm('Delete this purchase order record?')) {
+                await window.deletePurchaseOrderCloud(id);
+            }
+        }
+
+        // ================= CUSTOMERS & VEHICLES LOGIC =================
+        let selectedCustomerId = null;
+
+        function renderCustomersAndVehicles() {
+            const query = document.getElementById('cust-search').value.toLowerCase();
+            const listBody = document.getElementById('customer-list-body');
+            listBody.innerHTML = '';
+
+            const customers = window.shopState.customers || [];
+            const vehicles = window.shopState.vehicles || [];
+            document.getElementById('stat-cust-count').innerText = customers.length;
+
+            const filtered = customers.filter(c => {
+                const custMatch = (c.name||'').toLowerCase().includes(query) || (c.phone||'').toLowerCase().includes(query);
+                const hasMatchingVeh = vehicles.some(v => v.custId === c.id && ((v.vin||'').toLowerCase().includes(query) || (v.model||'').toLowerCase().includes(query)));
+                return custMatch || hasMatchingVeh;
+            });
+
+            if (filtered.length === 0) {
+                listBody.innerHTML = `<div class="p-6 text-center text-slate-500 font-mono text-xs">No matching customers or VINs found.</div>`;
+                return;
+            }
+
+            filtered.forEach(c => {
+                const custVehs = vehicles.filter(v => v.custId === c.id);
+                const isSelected = c.id === selectedCustomerId;
+
+                listBody.innerHTML += `
+                    <div onclick="selectCustomerDetail('${c.id}')" class="p-3.5 cursor-pointer transition ${isSelected ? 'bg-[#f96302]/10 border-l-4 border-[#f96302]' : 'hover:bg-[#121214]/60'}">
+                        <div class="flex items-center justify-between">
+                            <h4 class="font-bold text-white text-xs">${c.name}</h4>
+                            <span class="text-[10px] text-slate-400 font-mono"><i class="fa-solid fa-motorcycle text-[#f96302] mr-1"></i>${custVehs.length}</span>
+                        </div>
+                        <div class="text-[11px] text-slate-400 mt-1 font-mono">${c.phone}</div>
+                    </div>
+                `;
+            });
+
+            if (selectedCustomerId) {
+                renderCustomerDetailPanel(selectedCustomerId);
+            }
+        }
+
+        function selectCustomerDetail(id) {
+            selectedCustomerId = id;
+            renderCustomersAndVehicles();
+        }
+
+        function renderCustomerDetailPanel(id) {
+            const c = window.shopState.customers.find(item => item.id === id);
+            if (!c) return;
+
+            const panel = document.getElementById('cust-detail-panel');
+            const custVehs = window.shopState.vehicles.filter(v => v.custId === c.id);
+
+            let vehsHtml = '';
+            if (custVehs.length === 0) {
+                vehsHtml = `<div class="p-4 text-center text-slate-500 font-mono text-xs bg-[#121214] rounded-lg border border-[#2a2b36]">No registered vehicles linked to this customer yet.</div>`;
+            } else {
+                custVehs.forEach(v => {
+                    vehsHtml += `
+                        <div class="bg-[#121214] p-4 rounded-xl border border-[#2a2b36] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                            <div>
+                                <div class="font-bold text-white text-xs flex items-center gap-2"><i class="fa-solid fa-motorcycle text-[#f96302]"></i> ${v.year} ${v.make} ${v.model}</div>
+                                <div class="text-[11px] font-mono text-slate-400 mt-1">VIN: <strong class="text-slate-200">${v.vin}</strong></div>
+                                <div class="text-[10px] text-slate-500 mt-0.5">Plate: ${v.plate || 'N/A'} | Mileage: ${v.mileage || 'N/A'}</div>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button onclick="viewVinServiceHistory('${v.vin}')" class="bg-[#f96302]/10 hover:bg-[#f96302]/20 text-[#f96302] border border-[#f96302]/30 px-3 py-1.5 rounded-lg text-xs font-bold transition"><i class="fa-solid fa-history mr-1"></i> History</button>
+                                <button onclick="editVehicleRecord('${v.id}')" class="text-slate-400 hover:text-white p-1.5"><i class="fa-solid fa-pen-to-square"></i></button>
+                                <button onclick="deleteVehicleRecord('${v.id}')" class="text-rose-400 hover:text-rose-300 p-1.5"><i class="fa-solid fa-trash"></i></button>
+                            </div>
+                        </div>
+                    `;
+                });
+            }
+
+            panel.innerHTML = `
+                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-[#2a2b36] pb-4 mb-4 gap-3">
+                    <div>
+                        <h3 class="font-brand text-base font-bold text-white flex items-center gap-2"><i class="fa-solid fa-id-badge text-[#f96302]"></i> ${c.name}</h3>
+                        <p class="text-xs text-slate-400 mt-0.5"><i class="fa-solid fa-phone mr-1"></i> ${c.phone} | <i class="fa-solid fa-envelope mr-1"></i> ${c.email || 'N/A'}</p>
+                        <p class="text-xs text-slate-500"><i class="fa-solid fa-location-dot mr-1"></i> ${c.address || 'No address logged'}</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button onclick="editCustomerRecord('${c.id}')" class="bg-[#2a2b36] hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg text-xs font-bold transition"><i class="fa-solid fa-pen-to-square mr-1"></i> Edit</button>
+                        <button onclick="deleteCustomerRecord('${c.id}')" class="text-rose-400 hover:text-rose-300 p-1.5"><i class="fa-solid fa-trash"></i></button>
+                    </div>
+                </div>
+                <div class="space-y-3">
+                    <div class="flex justify-between items-center">
+                        <h4 class="text-xs font-mono uppercase font-bold text-[#f96302]">Registered Vehicles & VINs</h4>
+                        <button onclick="openVehicleModal('${c.id}')" class="text-xs text-[#f96302] hover:underline font-bold">+ Register Bike</button>
+                    </div>
+                    ${vehsHtml}
+                </div>
+            `;
+        }
+
+        function viewVinServiceHistory(vin) {
+            const historyPanel = document.getElementById('vin-history-panel');
+            const title = document.getElementById('vin-history-title');
+            const subtitle = document.getElementById('vin-history-subtitle');
+            const timeline = document.getElementById('vin-history-timeline');
+            const totalDisplay = document.getElementById('vin-history-total');
+
+            const matchingWOs = window.shopState.workOrders.filter(w => (w.vin || '').toUpperCase() === vin.toUpperCase());
+            const veh = window.shopState.vehicles.find(v => (v.vin || '').toUpperCase() === vin.toUpperCase());
+
+            title.innerHTML = `<i class="fa-solid fa-clock-rotate-left text-[#f96302]"></i> Lifetime VIN Service Timeline - ${veh ? `${veh.year} ${veh.make} ${veh.model}` : 'Vehicle'}`;
+            subtitle.innerText = `VIN: ${vin}`;
+            timeline.innerHTML = '';
+            let cumulativeSpent = 0;
+
+            if (matchingWOs.length === 0) {
+                timeline.innerHTML = `<div class="p-6 text-center text-slate-500 font-mono text-xs">No recorded work order service history for VIN ${vin}.</div>`;
+            } else {
+                matchingWOs.forEach(wo => {
+                    const totals = calculateWOTotals(wo);
+                    cumulativeSpent += totals.grandTotal;
+                    let itemsSummary = (wo.items || []).map(i => `<span class="bg-[#121214] px-2 py-0.5 rounded text-[10px] text-slate-300 border border-[#2a2b36]">${i.type}: ${i.desc} ($${(i.qty * i.price).toFixed(2)})</span>`).join(' ');
+
+                    timeline.innerHTML += `
+                        <div class="bg-[#121214] border border-[#2a2b36] rounded-xl p-4 space-y-2">
+                            <div class="flex items-center justify-between">
+                                <div class="font-mono font-bold text-[#f96302] text-xs">${wo.woNo} <span class="text-slate-500 font-normal ml-2">${wo.date}</span></div>
+                                <span class="px-2 py-0.5 rounded text-[10px] font-bold ${getStatusBadgeStyle(wo.status)}">${wo.status}</span>
+                            </div>
+                            <p class="text-xs text-white font-medium">${wo.notes || 'Service inspection'}</p>
+                            <div class="flex flex-wrap gap-1 pt-1">${itemsSummary}</div>
+                            <div class="text-right font-mono font-bold text-emerald-400 text-xs border-t border-[#2a2b36] pt-2">Invoice Total: $${totals.grandTotal.toFixed(2)}</div>
+                        </div>
+                    `;
+                });
+            }
+
+            totalDisplay.innerText = `Total Lifetime Service: $${cumulativeSpent.toFixed(2)}`;
+            historyPanel.classList.remove('hidden');
+            historyPanel.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function openCustomerModal() {
+            document.getElementById('modal-cust-title').innerHTML = `<i class="fa-solid fa-user text-[#f96302]"></i> Add Customer`;
+            document.getElementById('cust-id').value = '';
+            document.getElementById('form-cust').reset();
+            document.getElementById('modal-cust').classList.remove('hidden');
+        }
+
+        function editCustomerRecord(id) {
+            const c = window.shopState.customers.find(item => item.id === id);
+            if (!c) return;
+            document.getElementById('modal-cust-title').innerHTML = `<i class="fa-solid fa-pen-to-square text-[#f96302]"></i> Edit Customer`;
+            document.getElementById('cust-id').value = c.id;
+            document.getElementById('cust-name').value = c.name || '';
+            document.getElementById('cust-phone').value = c.phone || '';
+            document.getElementById('cust-email').value = c.email || '';
+            document.getElementById('cust-address').value = c.address || '';
+            document.getElementById('cust-notes').value = c.notes || '';
+            document.getElementById('modal-cust').classList.remove('hidden');
+        }
+
+        function closeCustomerModal() {
+            document.getElementById('modal-cust').classList.add('hidden');
+        }
+
+        async function saveCustomerRecord(e) {
+            e.preventDefault();
+            const editId = document.getElementById('cust-id').value;
+            const custData = {
+                id: editId || 'c-' + Date.now(),
+                name: document.getElementById('cust-name').value,
+                phone: document.getElementById('cust-phone').value,
+                email: document.getElementById('cust-email').value,
+                address: document.getElementById('cust-address').value,
+                notes: document.getElementById('cust-notes').value
+            };
+            await window.saveCustomerCloud(custData);
+            closeCustomerModal();
+            selectCustomerDetail(custData.id);
+        }
+
+        async function deleteCustomerRecord(id) {
+            if (confirm('Delete customer record and un-link vehicles?')) {
+                await window.deleteCustomerCloud(id);
+                selectedCustomerId = null;
+                document.getElementById('cust-detail-panel').innerHTML = `<div class="text-center py-12 text-slate-500 font-mono text-xs"><p>Select a customer to view specs.</p></div>`;
+            }
+        }
+
+        function openVehicleModal(prefCustId = null) {
+            const select = document.getElementById('veh-cust-id');
+            select.innerHTML = '';
+            (window.shopState.customers || []).forEach(c => {
+                select.innerHTML += `<option value="${c.id}" ${c.id === prefCustId ? 'selected' : ''}>${c.name} (${c.phone})</option>`;
+            });
+            document.getElementById('modal-veh-title').innerHTML = `<i class="fa-solid fa-motorcycle text-[#f96302]"></i> Register Vehicle & VIN`;
+            document.getElementById('veh-id').value = '';
+            document.getElementById('form-veh').reset();
+            document.getElementById('modal-veh').classList.remove('hidden');
+        }
+
+        function editVehicleRecord(id) {
+            const v = window.shopState.vehicles.find(item => item.id === id);
+            if (!v) return;
+            openVehicleModal(v.custId);
+            document.getElementById('veh-id').value = v.id;
+            document.getElementById('veh-vin').value = v.vin || '';
+            document.getElementById('veh-year').value = v.year || '';
+            document.getElementById('veh-make').value = v.make || '';
+            document.getElementById('veh-model').value = v.model || '';
+            document.getElementById('veh-mileage').value = v.mileage || '';
+            document.getElementById('veh-plate').value = v.plate || '';
+        }
+
+        function closeVehicleModal() {
+            document.getElementById('modal-veh').classList.add('hidden');
+        }
+
+        function decodeVinTool() {
+            const vin = document.getElementById('veh-vin').value.trim().toUpperCase();
+            if (!vin) { alert("Please enter a VIN first."); return; }
+            if (vin.startsWith('1HD')) {
+                document.getElementById('veh-make').value = 'Harley-Davidson';
+                document.getElementById('veh-year').value = '2023';
+                if (!document.getElementById('veh-model').value) document.getElementById('veh-model').value = 'Street Glide Touring';
+            } else if (vin.startsWith('53K')) {
+                document.getElementById('veh-make').value = 'Indian Motorcycle';
+                document.getElementById('veh-year').value = '2021';
+                if (!document.getElementById('veh-model').value) document.getElementById('veh-model').value = 'Scout Bobber';
+            } else {
+                document.getElementById('veh-make').value = 'Custom / Import';
+                document.getElementById('veh-year').value = '2022';
+            }
+        }
+
+        async function saveVehicleRecord(e) {
+            e.preventDefault();
+            const editId = document.getElementById('veh-id').value;
+            const vehData = {
+                id: editId || 'v-' + Date.now(),
+                custId: document.getElementById('veh-cust-id').value,
+                vin: document.getElementById('veh-vin').value.toUpperCase(),
+                year: document.getElementById('veh-year').value,
+                make: document.getElementById('veh-make').value,
+                model: document.getElementById('veh-model').value,
+                mileage: document.getElementById('veh-mileage').value,
+                plate: document.getElementById('veh-plate').value
+            };
+            await window.saveVehicleCloud(vehData);
+            closeVehicleModal();
+            selectCustomerDetail(vehData.custId);
+        }
+
+        async function deleteVehicleRecord(id) {
+            if (confirm('Delete this registered vehicle record?')) {
+                await window.deleteVehicleCloud(id);
+            }
+        }
+
+        function populateWOCustomerDropdown() {
+            const dropdown = document.getElementById('wo-quick-cust-veh');
+            if (!dropdown) return;
+            dropdown.innerHTML = '<option value="">-- Choose registered customer / bike --</option>';
+            const customers = window.shopState.customers || [];
+            const vehicles = window.shopState.vehicles || [];
+            vehicles.forEach(v => {
+                const cust = customers.find(c => c.id === v.custId);
+                const name = cust ? cust.name : 'Customer';
+                dropdown.innerHTML += `<option value="${v.id}">${name} - ${v.year} ${v.make} ${v.model} (${v.vin})</option>`;
+            });
+        }
+
+        function autoFillWOFromCustomer(vehId) {
+            if (!vehId) return;
+            const veh = window.shopState.vehicles.find(v => v.id === vehId);
+            if (!veh) return;
+            const cust = window.shopState.customers.find(c => c.id === veh.custId);
+            if (cust) {
+                document.getElementById('wo-cust-name').value = cust.name;
+                document.getElementById('wo-cust-phone').value = cust.phone;
+                document.getElementById('wo-cust-email').value = cust.email || '';
+            }
+            document.getElementById('wo-vehicle').value = `${veh.year} ${veh.make} ${veh.model}`;
+            document.getElementById('wo-vin').value = veh.vin;
+            document.getElementById('wo-mileage').value = veh.mileage || '';
+        }
+
+        // ================= INVENTORY LOGIC =================
+        function renderInventory() {
+            const query = document.getElementById('inv-search').value.toLowerCase();
+            const catFilter = document.getElementById('inv-filter-cat').value;
+            const tbody = document.getElementById('inv-table-body');
+            tbody.innerHTML = '';
+
+            const items = window.shopState.inventory || [];
+            let lowStockAlertCount = 0;
+
+            const filtered = items.filter(p => {
+                const matchesQ = (p.name||'').toLowerCase().includes(query) || (p.partNo||'').toLowerCase().includes(query);
+                const matchesC = catFilter === 'ALL' || p.cat === catFilter;
+                return matchesQ && matchesC;
+            });
+
+            items.forEach(p => { if (p.qty <= p.min) lowStockAlertCount++; });
+            const badge = document.getElementById('badge-inv-low');
+            if (lowStockAlertCount > 0) {
+                badge.innerText = `${lowStockAlertCount} Low`;
+                badge.classList.remove('hidden');
+            } else {
+                badge.classList.add('hidden');
+            }
+
+            if (filtered.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="7" class="py-8 text-center text-slate-500 font-mono">No inventory parts found.</td></tr>`;
+                return;
+            }
+
+            filtered.forEach(p => {
+                const isLow = p.qty <= p.min;
+                tbody.innerHTML += `
+                    <tr class="hover:bg-[#121214]/50 transition">
+                        <td class="py-3.5 px-4 font-mono font-bold text-[#f96302]">${p.partNo}</td>
+                        <td class="py-3.5 px-4 font-bold text-white">${p.name}</td>
+                        <td class="py-3.5 px-4 text-slate-400">${p.cat}</td>
+                        <td class="py-3.5 px-4 text-center">
+                            <span class="px-2.5 py-1 rounded text-xs font-mono font-bold ${isLow ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'}">${p.qty} in stock</span>
+                        </td>
+                        <td class="py-3.5 px-4 text-right font-mono text-slate-400">$${parseFloat(p.cost).toFixed(2)}</td>
+                        <td class="py-3.5 px-4 text-right font-mono font-bold text-white">$${parseFloat(p.retail).toFixed(2)}</td>
+                        <td class="py-3.5 px-4 text-center space-x-2">
+                            <button onclick="editInventoryPart('${p.id}')" class="text-[#f96302] hover:text-amber-400 p-1.5"><i class="fa-solid fa-pen-to-square"></i></button>
+                            <button onclick="deleteInventoryPart('${p.id}')" class="text-rose-400 hover:text-rose-300 p-1.5"><i class="fa-solid fa-trash"></i></button>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+
+        function openInventoryModal() {
+            document.getElementById('modal-inv-title').innerHTML = `<i class="fa-solid fa-box text-[#f96302]"></i> Add Inventory Item`;
+            document.getElementById('inv-id').value = '';
+            document.getElementById('form-inv').reset();
+            document.getElementById('modal-inv').classList.remove('hidden');
+        }
+
+        function editInventoryPart(id) {
+            const p = window.shopState.inventory.find(i => i.id === id);
+            if (!p) return;
+            document.getElementById('modal-inv-title').innerHTML = `<i class="fa-solid fa-pen-to-square text-[#f96302]"></i> Edit ${p.partNo}`;
+            document.getElementById('inv-id').value = p.id;
+            document.getElementById('inv-part-no').value = p.partNo || '';
+            document.getElementById('inv-cat').value = p.cat || 'Filters';
+            document.getElementById('inv-name').value = p.name || '';
+            document.getElementById('inv-qty').value = p.qty;
+            document.getElementById('inv-min').value = p.min;
+            document.getElementById('inv-cost').value = p.cost;
+            document.getElementById('inv-retail').value = p.retail;
+            document.getElementById('modal-inv').classList.remove('hidden');
+        }
+
+        function closeInventoryModal() {
+            document.getElementById('modal-inv').classList.add('hidden');
+        }
+
+        async function saveInventoryPart(e) {
+            e.preventDefault();
+            const editId = document.getElementById('inv-id').value;
+            const partData = {
+                id: editId || 'inv-' + Date.now(),
+                partNo: document.getElementById('inv-part-no').value,
+                cat: document.getElementById('inv-cat').value,
+                name: document.getElementById('inv-name').value,
+                qty: parseInt(document.getElementById('inv-qty').value) || 0,
+                min: parseInt(document.getElementById('inv-min').value) || 0,
+                cost: parseFloat(document.getElementById('inv-cost').value) || 0,
+                retail: parseFloat(document.getElementById('inv-retail').value) || 0
+            };
+            await window.savePartCloud(partData);
+            closeInventoryModal();
+        }
+
+        async function deleteInventoryPart(id) {
+            if (confirm('Delete this part from inventory database?')) {
+                await window.deletePartCloud(id);
+            }
+        }
+
+        // ================= PART PICKER =================
+        function openPartPickerModal() {
+            renderPartPickerList();
+            document.getElementById('modal-picker').classList.remove('hidden');
+        }
+
+        function closePartPickerModal() {
+            document.getElementById('modal-picker').classList.add('hidden');
+        }
+
+        function renderPartPickerList() {
+            const query = document.getElementById('picker-search').value.toLowerCase();
+            const tbody = document.getElementById('picker-items-body');
+            tbody.innerHTML = '';
+            const filtered = (window.shopState.inventory || []).filter(p => (p.name||'').toLowerCase().includes(query) || (p.partNo||'').toLowerCase().includes(query));
+            filtered.forEach(p => {
+                tbody.innerHTML += `
+                    <tr>
+                        <td class="py-2.5 px-3 font-mono font-bold text-[#f96302]">${p.partNo}</td>
+                        <td class="py-2.5 px-3 font-medium text-white">${p.name}</td>
+                        <td class="py-2.5 px-3 text-center font-mono">${p.qty}</td>
+                        <td class="py-2.5 px-3 text-right font-mono">$${parseFloat(p.retail).toFixed(2)}</td>
+                        <td class="py-2.5 px-3 text-center">
+                            <button type="button" onclick="selectPartForWO('${p.id}')" class="bg-[#f96302]/20 hover:bg-[#f96302]/30 text-[#f96302] px-2.5 py-1 rounded font-bold text-[11px] transition">+ Add</button>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+
+        function selectPartForWO(id) {
+            const p = window.shopState.inventory.find(i => i.id === id);
+            if (p) {
+                addWOLineItem('Part', `${p.name} (${p.partNo})`, 1, p.retail, p.id, false);
+                closePartPickerModal();
+            }
+        }
+
+        // ================= PRESETS LOGIC =================
+        function renderPresets() {
+            const grid = document.getElementById('presets-grid');
+            grid.innerHTML = '';
+            const presets = window.shopState.presets || [];
+            if (presets.length === 0) {
+                grid.innerHTML = `<div class="col-span-full py-12 text-center text-slate-500 font-mono">No service presets created yet.</div>`;
+                return;
+            }
+            presets.forEach(pr => {
+                grid.innerHTML += `
+                    <div class="industrial-card rounded-xl p-5 flex flex-col justify-between space-y-4 hover:border-[#f96302]/60 transition">
+                        <div>
+                            <div class="flex items-start justify-between gap-2">
+                                <h3 class="font-bold text-white text-sm">${pr.name}</h3>
+                                <div class="flex items-center gap-1">
+                                    <button onclick="editPreset('${pr.id}')" class="text-slate-400 hover:text-[#f96302] p-1"><i class="fa-solid fa-pen-to-square text-xs"></i></button>
+                                    <button onclick="deletePreset('${pr.id}')" class="text-slate-400 hover:text-rose-400 p-1"><i class="fa-solid fa-trash text-xs"></i></button>
+                                </div>
+                            </div>
+                            <p class="text-xs text-slate-400 mt-2 leading-relaxed">${pr.desc}</p>
+                        </div>
+                        <div class="pt-3 border-t border-[#2a2b36] flex items-center justify-between text-xs">
+                            <div class="font-mono text-slate-300"><i class="fa-solid fa-clock text-[#f96302] mr-1"></i> ${pr.hours} hrs</div>
+                            <div class="font-mono font-bold text-[#f96302] text-sm">$${parseFloat(pr.price).toFixed(2)}</div>
+                        </div>
+                        <button onclick="applyPresetToNewWO('${pr.id}')" class="w-full bg-[#f96302]/10 hover:bg-[#f96302]/20 text-[#f96302] border border-[#f96302]/30 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2"><i class="fa-solid fa-bolt"></i> Apply Preset to New WO</button>
+                    </div>
+                `;
+            });
+        }
+
+        function applyPresetToNewWO(presetId) {
+            const pr = window.shopState.presets.find(p => p.id === presetId);
+            if (!pr) return;
+            switchTab('workOrders');
+            openWorkOrderModal();
+            document.getElementById('wo-notes').value = `${pr.name}: ${pr.desc}`;
+            addWOLineItem('Labor', `${pr.name} (Labor)`, pr.hours, window.shopState.settings.laborRate || 95);
+            addWOLineItem('Part', `${pr.name} - Package Materials/Kit`, 1, pr.price - (pr.hours * (window.shopState.settings.laborRate || 95)));
+        }
+
+        function openPresetModal() {
+            document.getElementById('modal-preset-title').innerHTML = `<i class="fa-solid fa-bolt text-[#f96302]"></i> Service Preset Package`;
+            document.getElementById('preset-id').value = '';
+            document.getElementById('form-preset').reset();
+            document.getElementById('modal-preset').classList.remove('hidden');
+        }
+
+        function editPreset(id) {
+            const pr = window.shopState.presets.find(p => p.id === id);
+            if (!pr) return;
+            document.getElementById('modal-preset-title').innerHTML = `<i class="fa-solid fa-pen-to-square text-[#f96302]"></i> Edit Preset`;
+            document.getElementById('preset-id').value = pr.id;
+            document.getElementById('preset-name').value = pr.name;
+            document.getElementById('preset-desc').value = pr.desc;
+            document.getElementById('preset-hours').value = pr.hours;
+            document.getElementById('preset-price').value = pr.price;
+            document.getElementById('modal-preset').classList.remove('hidden');
+        }
+
+        function closePresetModal() {
+            document.getElementById('modal-preset').classList.add('hidden');
+        }
+
+        async function saveServicePreset(e) {
+            e.preventDefault();
+            const editId = document.getElementById('preset-id').value;
+            const presetData = {
+                id: editId || 'preset-' + Date.now(),
+                name: document.getElementById('preset-name').value,
+                desc: document.getElementById('preset-desc').value,
+                hours: parseFloat(document.getElementById('preset-hours').value) || 0,
+                price: parseFloat(document.getElementById('preset-price').value) || 0
+            };
+            await window.savePresetCloud(presetData);
+            closePresetModal();
+        }
+
+        async function deletePreset(id) {
+            if (confirm('Delete this preset package?')) {
+                await window.deletePresetCloud(id);
+            }
+        }
+
+        // ================= PRINT PREVIEW =================
+        function openPrintPreview(id) {
+            const wo = window.shopState.workOrders.find(w => w.id === id);
+            if (!wo) return;
+            const container = document.getElementById('printable-invoice');
+            container.innerHTML = generateFullInvoiceDocumentHTML(wo, window.shopState.settings);
+            document.getElementById('modal-print').classList.remove('hidden');
+        }
+
+        function closePrintPreview() {
+            document.getElementById('modal-print').classList.add('hidden');
+        }
+
+        // Config Modal
+        function openConfigModal() {
+            const raw = localStorage.getItem('welkers_firebase_custom_config');
+            if (raw) document.getElementById('config-json-input').value = raw;
+            document.getElementById('modal-config').classList.remove('hidden');
+        }
+
+        function closeConfigModal() {
+            document.getElementById('modal-config').classList.add('hidden');
+        }
+
+        function saveFirebaseConfig() {
+            const val = document.getElementById('config-json-input').value.trim();
+            if (!val) return;
+            try {
+                JSON.parse(val);
+                localStorage.setItem('welkers_firebase_custom_config', val);
+                closeConfigModal();
+                window.initFirebaseSystem();
+            } catch(e) { alert("Invalid Firebase JSON format."); }
+        }
+
+        function clearFirebaseConfig() {
+            localStorage.removeItem('welkers_firebase_custom_config');
+            closeConfigModal();
+            window.initFirebaseSystem();
+        }
+    </script>
+</body>
+</html>
